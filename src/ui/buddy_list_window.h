@@ -1,5 +1,6 @@
 #pragma once
 #include "window_base.h"
+#include "menu_template.h"
 #include "../oscar/client.h"
 #include <QImage>
 #include <QPointer>
@@ -10,6 +11,7 @@ class BuddyListWindow final : public WindowBase {
   Q_OBJECT
 public:
   explicit BuddyListWindow(OscarClient *client);
+  static constexpr int AwaySavedBase = 24100; // + index of a saved away message (Away Message submenu)
   void requestExit();
 signals:
   void exitAccepted();
@@ -46,4 +48,10 @@ private:
   quint16 selectedGroupId_ = 0;
   quint16 selectedItemId_ = 0;
   bool selectedGroup_ = false;
+  QList<MenuItem> menuBar_;
+  int hoveredMenu_ = -1;
+  int openMenu_ = -1;
+  QVector<QRect> menuRects() const;
+  void openMenu(int index);
+  QList<MenuItem> preparedMenu(const MenuItem &top) const;
 };

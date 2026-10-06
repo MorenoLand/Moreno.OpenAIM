@@ -42,8 +42,17 @@ set(AIM_SOURCES
   src/ui/buddy_list_window.h
   src/ui/messaging_window.cpp
   src/ui/messaging_window.h
+  src/ui/menu_template.cpp
+  src/ui/menu_template.h
+  src/ui/ctl_group.cpp
+  src/ui/ctl_group.h
+  src/ui/native_dialog.cpp
+  src/ui/native_dialog.h
+  src/ui/away_dialog.cpp
+  src/ui/away_dialog.h
   resources/aim.qrc
   resources/dialogs.qrc
+  resources/ui.qrc
 )
 if(WIN32)
   qt_add_executable(openaim WIN32 ${AIM_SOURCES})

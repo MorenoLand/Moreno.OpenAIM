@@ -1,4 +1,5 @@
 #include "native_preferences.h"
+#include "native_dialog.h"
 #include <QCoreApplication>
 #include <QFile>
 #include <QJsonDocument>
@@ -32,20 +33,8 @@ DWORD CALLBACK readRich(DWORD_PTR cookie, LPBYTE buffer, LONG size, LONG *writte
 void setText(HWND window, const QString &text) { wchar_t name[32]{};GetClassNameW(window,name,32);if(_wcsicmp(name,L"COMBOBOX")==0&&(GetWindowLongPtrW(window,GWL_STYLE)&3)==CBS_DROPDOWNLIST){LRESULT index=SendMessageW(window,CB_FINDSTRINGEXACT,-1,reinterpret_cast<LPARAM>(text.utf16()));SendMessageW(window,CB_SETCURSEL,index,0);}else SetWindowTextW(window, reinterpret_cast<LPCWSTR>(text.utf16())); }
 QVariant readControl(HWND window){QString text=windowText(window);wchar_t name[32]{};GetClassNameW(window,name,32);if(_wcsicmp(name,L"EDIT")!=0||!(GetWindowLongPtrW(window,GWL_STYLE)&ES_PASSWORD))return text;QByteArray bytes=text.toUtf8();DATA_BLOB source{DWORD(bytes.size()),reinterpret_cast<BYTE *>(bytes.data())},encrypted{};if(!CryptProtectData(&source,nullptr,nullptr,nullptr,nullptr,CRYPTPROTECT_UI_FORBIDDEN,&encrypted)){qWarning()<<"Cannot protect preference password"<<GetLastError();return {};}QByteArray result(reinterpret_cast<const char *>(encrypted.pbData),int(encrypted.cbData));SecureZeroMemory(bytes.data(),size_t(bytes.size()));LocalFree(encrypted.pbData);return result;}
 QString controlValue(HWND window,const QVariant &value){wchar_t name[32]{};GetClassNameW(window,name,32);if(_wcsicmp(name,L"EDIT")!=0||!(GetWindowLongPtrW(window,GWL_STYLE)&ES_PASSWORD))return value.toString();QByteArray bytes=value.toByteArray();if(bytes.isEmpty())return {};DATA_BLOB source{DWORD(bytes.size()),reinterpret_cast<BYTE *>(bytes.data())},plain{};if(!CryptUnprotectData(&source,nullptr,nullptr,nullptr,nullptr,CRYPTPROTECT_UI_FORBIDDEN,&plain)){qWarning()<<"Cannot decrypt preference password"<<GetLastError();return {};}QString text=QString::fromUtf8(reinterpret_cast<const char *>(plain.pbData),int(plain.cbData));SecureZeroMemory(plain.pbData,plain.cbData);LocalFree(plain.pbData);return text;}
-QByteArray emptyTemplate(const QJsonObject &dialog, bool secondary) {
-  QByteArray bytes;
-  auto word = [&bytes](WORD value) { bytes.append(reinterpret_cast<const char *>(&value), sizeof(value)); };
-  auto dword = [&bytes](DWORD value) { bytes.append(reinterpret_cast<const char *>(&value), sizeof(value)); };
-  auto string = [&word](const QString &value) { for (QChar c : value) word(c.unicode()); word(0); };
-  DWORD style = secondary ? WS_POPUP | WS_CAPTION | WS_SYSMENU | DS_MODALFRAME | DS_SETFONT : WS_CHILD | DS_CONTROL | DS_SETFONT;
-  dword(style); dword(secondary ? 0 : WS_EX_CONTROLPARENT); word(0); word(0); word(0); word(WORD(dialog.value("width").toInt())); word(WORD(dialog.value("height").toInt())); word(0); word(0); string(dialog.value("title").toString());
-  QJsonObject font = dialog.value("font").toObject(); word(WORD(font.value("points").toInt(8))); string(font.value("face").toString("MS Sans Serif"));
-  return bytes;
-}
-QString controlClass(const QJsonValue &value) {
-  if (value.isDouble()) { switch (value.toInt()) { case 128: return "BUTTON"; case 129: return "EDIT"; case 130: return "STATIC"; case 131: return "LISTBOX"; case 132: return "SCROLLBAR"; case 133: return "COMBOBOX"; } }
-  QString name = value.toString(); if (name == "WndAte32Class") return "RICHEDIT50W"; if (name == "_Oscar_Tree") return "SysTreeView32"; if (name == "_Oscar_UserListWnd") return "SysListView32"; return name;
-}
+QByteArray emptyTemplate(const QJsonObject &dialog, bool secondary) { return nativeDialogTemplate(dialog, secondary); }
+QString controlClass(const QJsonValue &value) { return nativeControlClass(value); }
 }
 #endif
 NativePreferences::NativePreferences(QWindow *owner, QObject *parent) : QObject(parent), owner_(owner) {

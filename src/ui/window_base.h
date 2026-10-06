@@ -28,6 +28,13 @@ protected:
     return point;
 #endif
   }
+  QPoint canvasToGlobal(const QPoint &point) const {
+#ifdef Q_OS_WIN
+    return mapToGlobal(point - QPoint(1, TitleBarHeight));
+#else
+    return mapToGlobal(point);
+#endif
+  }
   void setCaptionButtons(bool minimize, bool maximize, bool closeButton);
   bool confirmExit(bool &suppress);
   void setCanvasSize(const QSize &size);

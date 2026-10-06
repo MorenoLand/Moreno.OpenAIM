@@ -41,14 +41,19 @@ inline QString groupName(const QVector<aim::oscar::FeedbagItem> &items, quint16 
 // Reference geometry is the 142x443 canvas. Extra width/height stretches the tabs and list; the logo and banner stay centred and the action area stays on the bottom edge.
 // The anchoring is inferred from the reference layout until the Buddy List CTLGROUP placement data is decoded.
 constexpr QSize ReferenceCanvas(142, 443), MinimumCanvas(142, 350);
+constexpr int MenuRowHeight = 20, MenuTop = 28, MenuPadding = 6;
+QFont menuFont() { return QFont(QStringLiteral("MS Sans Serif"), 8); }
+int menuRowCount(const QVector<QRect> &menus) { return menus.isEmpty() ? 2 : (menus.last().top() - MenuTop) / MenuRowHeight + 1; }
 struct Layout {
   int dx, dy;
   QRect logo, onlineTab, setupTab, list, banner, buttons[6];
   int rowLimit() const { return list.bottom() - 5; }
-  explicit Layout(const QSize &canvas) : dx(std::max(0, canvas.width() - ReferenceCanvas.width())), dy(canvas.height() - ReferenceCanvas.height()) {
-    logo = QRect(11 + dx / 2, 75, 120, 60);
-    onlineTab = QRect(3, 139, 65 + dx / 2, 28); setupTab = QRect(onlineTab.right() + 1, 139, 69 + dx - dx / 2, 28);
-    list = QRect(4, 169, 134 + dx, 139 + dy);
+  // The reference has a two-row (wrapped) menu bar; each row fewer moves the header up by one 20 px menu row.
+  explicit Layout(const QSize &canvas, int menuRows = 2) : dx(std::max(0, canvas.width() - ReferenceCanvas.width())), dy(canvas.height() - ReferenceCanvas.height()) {
+    const int top = (menuRows - 2) * MenuRowHeight;
+    logo = QRect(11 + dx / 2, 75 + top, 120, 60);
+    onlineTab = QRect(3, 139 + top, 65 + dx / 2, 28); setupTab = QRect(onlineTab.right() + 1, 139 + top, 69 + dx - dx / 2, 28);
+    list = QRect(4, 169 + top, 134 + dx, 139 + dy - top);
     banner = QRect(6 + dx / 2, 390 + dy, 130, 20);
     const QRect reference[6] = {QRect(4,311,23,32),QRect(31,311,27,32),QRect(61,315,24,24),QRect(4,352,47,32),QRect(53,357,24,24),QRect(80,357,24,24)};
     for (int i = 0; i < 6; ++i) buttons[i] = reference[i].translated(0, dy);
@@ -60,26 +65,28 @@ BuddyListWindow::BuddyListWindow(OscarClient *client) : WindowBase(QString(), QS
   connect(client_, &OscarClient::rosterChanged, this, [this] { renderNow(); });
   const int buttonIds[6][3]={{110,111,112},{137,193,192},{253,255,254},{261,264,267},{260,263,266},{259,262,265}};for(int button=0;button<6;++button)for(int state=0;state<3;++state)buttonStates_[button][state]=transparentBitmap(QStringLiteral(":/aim/button-%1.bmp").arg(buttonIds[button][state]));
   setResizable(MinimumCanvas);
+  menuBar_ = loadMenuResource(103);
 }
 void BuddyListWindow::paintContent(QPainter &p) {
   p.fillRect(QRect(1, TitleBarHeight, canvasWidth() - 2, canvasHeight() - TitleBarHeight - 1), QColor(235, 235, 235));
-  QFont menu(QStringLiteral("MS Sans Serif"), 8);
-  drawText(p, QPoint(7, 42), QStringLiteral("My AIM"), QColor(20, 20, 20), menu);
-  drawText(p, QPoint(57, 42), QStringLiteral("People"), QColor(20, 20, 20), menu);
-  drawText(p, QPoint(7, 62), QStringLiteral("Help"), QColor(20, 20, 20), menu);
-  const Layout layout(QSize(canvasWidth(), canvasHeight())); const int rowLimit = layout.rowLimit(), rowWidth = layout.list.width() - 3;
+  const QVector<QRect> menus = menuRects();
+  for (int i = 0; i < menus.size(); ++i) {
+    if (i == openMenu_ || i == hoveredMenu_) { p.fillRect(menus[i], QColor(229, 243, 255)); p.setPen(QColor(204, 232, 255)); p.drawRect(menus[i].adjusted(0, 0, -1, -1)); }
+    drawText(p, QPoint(menus[i].left() + MenuPadding, menus[i].top() + 14), menuBar_[i].label(), QColor(20, 20, 20), menuFont());
+  }
+  const Layout layout(QSize(canvasWidth(), canvasHeight()), menuRowCount(menus)); const int rowLimit = layout.rowLimit(), rowWidth = layout.list.width() - 3;
   if (!logo_.isNull()) p.drawImage(layout.logo, logo_);
   p.fillRect(layout.onlineTab, listSetup_ ? QColor(220, 220, 220) : Qt::white); p.fillRect(layout.setupTab, listSetup_ ? Qt::white : QColor(220, 220, 220));
   p.setPen(QColor(130, 130, 130)); p.drawRect(layout.onlineTab); p.drawRect(layout.setupTab);
-  drawText(p, QPoint(layout.onlineTab.left() + 7, 157), QStringLiteral("Online"), QColor(20, 20, 20), QFont(QStringLiteral("MS Sans Serif"), 8, listSetup_ ? QFont::Normal : QFont::Bold));
-  drawText(p, QPoint(layout.setupTab.left() + 7, 157), QStringLiteral("List Setup"), QColor(20, 20, 20), QFont(QStringLiteral("MS Sans Serif"), 8, listSetup_ ? QFont::Bold : QFont::Normal));
+  drawText(p, QPoint(layout.onlineTab.left() + 7, layout.onlineTab.top() + 18), QStringLiteral("Online"), QColor(20, 20, 20), QFont(QStringLiteral("MS Sans Serif"), 8, listSetup_ ? QFont::Normal : QFont::Bold));
+  drawText(p, QPoint(layout.setupTab.left() + 7, layout.setupTab.top() + 18), QStringLiteral("List Setup"), QColor(20, 20, 20), QFont(QStringLiteral("MS Sans Serif"), 8, listSetup_ ? QFont::Bold : QFont::Normal));
   const QRect listRect = layout.list; p.fillRect(listRect, Qt::white); p.setPen(QColor(130, 130, 130)); p.drawRect(listRect);
   const QVector<aim::oscar::FeedbagItem> items = client_ ? client_->roster() : QVector<aim::oscar::FeedbagItem>{};
   rows_.clear();
   QVector<quint16> groupIds;
   for (const auto &item : items) if (item.classId == 1 && item.groupId != 0 && !item.name.isEmpty() && !groupIds.contains(item.groupId)) groupIds.append(item.groupId);
   const auto groupOrder=memberOrder(items,0);if(!groupOrder.isEmpty())std::stable_sort(groupIds.begin(),groupIds.end(),[&](quint16 left,quint16 right){int a=groupOrder.indexOf(left),b=groupOrder.indexOf(right);return (a<0?groupOrder.size():a)<(b<0?groupOrder.size():b);});
-  int y = 181;
+  int y = listRect.top() + 12;
   const QFont small(QStringLiteral("MS Sans Serif"), 8);
   for (quint16 groupId : groupIds) {
     int total = 0, online = 0;
@@ -106,16 +113,17 @@ void BuddyListWindow::paintContent(QPainter &p) {
 }
 void BuddyListWindow::contentMousePress(const QPoint &point, Qt::MouseButton button) {
   if (button != Qt::LeftButton) return;
+  {const QVector<QRect> menus=menuRects();for(int i=0;i<menus.size();++i)if(menus[i].contains(point)){openMenu(i);return;}}
   contentMouseMove(point);if(hoveredAction_){pressedAction_=hoveredAction_;renderNow();return;}
   for(const auto &row:rows_)if(row.rect.contains(point)){selectedGroupId_=row.groupId;selectedItemId_=row.itemId;selectedGroup_=row.group;selectedName_=row.name;if(row.group&&point.x()<18){if(collapsedGroups_.contains(row.groupId))collapsedGroups_.remove(row.groupId);else collapsedGroups_.insert(row.groupId);}renderNow();return;}
-  const Layout layout(QSize(canvasWidth(), canvasHeight()));
+  const Layout layout(QSize(canvasWidth(), canvasHeight()), menuRowCount(menuRects()));
   if (layout.setupTab.contains(point)) listSetup_ = true;
   else if (layout.onlineTab.contains(point)) listSetup_ = false;
   else return;
   renderNow();
 }
-void BuddyListWindow::contentMouseMove(const QPoint &point) { const Layout layout(QSize(canvasWidth(),canvasHeight()));int action=0;for(int i=0;i<6;++i)if(layout.buttons[i].contains(point)){action=i+1;break;}if(action!=hoveredAction_){hoveredAction_=action;renderNow();} }
-void BuddyListWindow::contentLeave() { if(hoveredAction_){hoveredAction_=0;renderNow();} }
+void BuddyListWindow::contentMouseMove(const QPoint &point) { const QVector<QRect> menus=menuRects();int menu=-1;for(int i=0;i<menus.size();++i)if(menus[i].contains(point))menu=i;if(menu!=hoveredMenu_){hoveredMenu_=menu;renderNow();}const Layout layout(QSize(canvasWidth(),canvasHeight()),menuRowCount(menus));int action=0;for(int i=0;i<6;++i)if(layout.buttons[i].contains(point)){action=i+1;break;}if(action!=hoveredAction_){hoveredAction_=action;renderNow();} }
+void BuddyListWindow::contentLeave() { if(hoveredAction_||hoveredMenu_>=0){hoveredAction_=0;hoveredMenu_=-1;renderNow();} }
 void BuddyListWindow::contentMouseDoubleClick(const QPoint &point,Qt::MouseButton button) { if(button!=Qt::LeftButton)return;for(const auto &row:rows_)if(!row.group&&row.rect.contains(point)){emit actionRequested(139,row.name);return;} }
 void BuddyListWindow::contentKeyPress(QKeyEvent *event) { if((event->key()==Qt::Key_Return||event->key()==Qt::Key_Enter)&&!selectedName_.isEmpty()){emit actionRequested(139,selectedName_);event->accept();return;}if(event->modifiers().testFlag(Qt::AltModifier)&&event->key()==Qt::Key_I){emit actionRequested(139,selectedName_);event->accept();return;}WindowBase::contentKeyPress(event); }
 void BuddyListWindow::contentMouseRelease(const QPoint &point,Qt::MouseButton button) { if(button!=Qt::LeftButton||!pressedAction_)return;int action=pressedAction_;pressedAction_=0;contentMouseMove(point);renderNow();if(action!=hoveredAction_)return;const int ids[]={139,529,138,174,24000,20002};emit actionRequested(ids[action-1],selectedName_); }
@@ -134,4 +142,37 @@ void BuddyListWindow::requestExit() {
   confirmation_ = dialog;
   connect(dialog, &QObject::destroyed, this, [this] { confirmation_.clear(); });
   dialog->show();
+}
+QVector<QRect> BuddyListWindow::menuRects() const {
+  // Lays the RT_MENU 103 bar out like a native menu bar: items flow left to right and wrap onto 20 px rows.
+  QVector<QRect> rects; const QFontMetrics metrics(menuFont()); int x = 1, y = MenuTop;
+  for (const MenuItem &item : menuBar_) {
+    const int width = metrics.horizontalAdvance(item.label()) + MenuPadding * 2;
+    if (x > 1 && x + width > canvasWidth() - 1) { x = 1; y += MenuRowHeight; }
+    rects.append(QRect(x, y, width, MenuRowHeight)); x += width;
+  }
+  return rects;
+}
+QList<MenuItem> BuddyListWindow::preparedMenu(const MenuItem &top) const {
+  // Placeholder entries are filled at run time by their owning modules; mirror what the original tray menu shows.
+  std::function<QList<MenuItem>(const QList<MenuItem> &)> prepare = [&](const QList<MenuItem> &items) {
+    QList<MenuItem> result;
+    for (MenuItem item : items) {
+      if (item.id == 660) { const QVariantList saved = settings_.value(QStringLiteral("nativePreferences/274/417/items")).toList(); for (int i = 0; i < saved.size(); ++i) { MenuItem away; away.id = AwaySavedBase + i; away.text = saved[i].toMap().value(QStringLiteral("label")).toString(); away.text.replace(QLatin1Char('&'), QStringLiteral("&&")); result.append(away); } if (!saved.isEmpty()) result.append(MenuItem{}); result.append(MenuItem{QStringLiteral("New Message..."), 24000}); continue; }
+      if (item.id == 1001) { result.append(MenuItem{QStringLiteral("Add New POP3 Mailbox"), 1003}); continue; }
+      if (item.id == 997) continue;
+      item.text.replace(QStringLiteral("%s"), selectedName_.isEmpty() || selectedGroup_ ? QStringLiteral("Buddy") : selectedName_);
+      item.children = prepare(item.children); if (!item.isSeparator() && item.id == 0 && item.children.isEmpty()) item.grayed = true;
+      result.append(item);
+    }
+    return result;
+  };
+  return prepare(top.children);
+}
+void BuddyListWindow::openMenu(int index) {
+  const QVector<QRect> menus = menuRects(); if (index < 0 || index >= menus.size()) return;
+  openMenu_ = index; renderNow();
+  const int command = popupMenu(this, preparedMenu(menuBar_[index]), canvasToGlobal(menus[index].bottomLeft() + QPoint(0, 1)));
+  openMenu_ = -1; hoveredMenu_ = -1; renderNow();
+  if (command) emit actionRequested(command, selectedGroup_ ? QString() : selectedName_);
 }
