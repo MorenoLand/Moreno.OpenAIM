@@ -69,7 +69,9 @@ QVector<quint16> memberOrder(const QVector<aim::oscar::FeedbagItem> &items, quin
 QSize canvasForOuter(const QSize &outer) {
 #ifdef Q_OS_WIN
   RECT frame{0, 0, 0, 0}; AdjustWindowRectEx(&frame, WS_OVERLAPPEDWINDOW, FALSE, 0);
-  return QSize(outer.width() - (frame.right - frame.left) + 2, outer.height() - (frame.bottom - frame.top) + 24 + 3);
+  // aim.exe is a pre-Vista executable, so Windows gives it 1 px thinner frames on each side than ours: its client is
+  // 2 px wider for the same outer size (134 vs 132 px on the reference screenshot).
+  return QSize(outer.width() - (frame.right - frame.left) + 2 + 2, outer.height() - (frame.bottom - frame.top) + 24 + 3);
 #else
   return outer;
 #endif
@@ -184,32 +186,48 @@ void BuddyListWindow::paintObject(QPainter &p, CtlObject &o) {
   }
 }
 
+// _Oscar_TabGroup, measured pixel for pixel from the reference screenshot: Arial -12 captions (selected bold), each tab
+// caption width + 18 px (+1 when selected); the selected tab rises 2 px above the others; grey (152) left/top edges,
+// grey (160) + black right edges; the page frame spans the client width with a grey left/top and black right/bottom.
+namespace { const QColor TabEdge(152, 152, 152), TabInner(160, 160, 160); }
+QRect BuddyListWindow::tabWindow(const CtlObject &tabs) const {
+  const int left = tabs.pos.x() + tabs.margins.left() - 5, top = tabs.pos.y() + tabs.margins.top() - 27; // window origin (0x122055d9)
+  return QRect(QPoint(left, top), QPoint(tabs.pos.x() + tabs.size.width() - 1, top + tabs.size.height() - tabs.margins.top() - tabs.margins.bottom() + 30));
+}
 QVector<QRect> BuddyListWindow::tabRects(const CtlObject &tabs) const {
-  // _Oscar_TabGroup window origin is (pos + margins - (5, 27)) (0x122055d9); captions come from the page group titles.
-  QVector<QRect> rects; int x = tabs.pos.x() + tabs.margins.left() - 5 + 2; const int y = tabs.pos.y() + tabs.margins.top() - 27 + 2;
-  for (const auto &page : tabs.children) { const int w = gdiTextSize(TreeFont.bold(), aimString(page->titleId)).width() + 14; rects.append(QRect(x, y, w, 20)); x += w; }
+  QVector<QRect> rects; const QRect window = tabWindow(tabs); int x = window.left();
+  for (const auto &page : tabs.children) {
+    const bool selected = !page->hidden();
+    const int w = gdiTextSize(selected ? TreeFont.bold() : TreeFont, aimString(page->titleId)).width() + 18 + (selected ? 1 : 0);
+    rects.append(QRect(x, window.top() + (selected ? 0 : 2), w, selected ? 23 : 20)); x += w;
+  }
   return rects;
 }
 void BuddyListWindow::paintTabs(QPainter &p, CtlObject &tabs) {
-  const QRect window(tabs.pos.x() + tabs.margins.left() - 5, tabs.pos.y() + tabs.margins.top() - 27, tabs.size.width() - tabs.margins.left() - tabs.margins.right() + 5, tabs.size.height() - tabs.margins.top() - tabs.margins.bottom() + 31);
-  const QRect page(window.left(), window.top() + 22, window.width(), window.height() - 22);
-  // Page frame (raised): highlight left/top, shadows right/bottom.
-  p.setPen(art::Highlight); p.drawLine(page.left(), page.bottom(), page.left(), page.top()); p.drawLine(page.left(), page.top(), page.right(), page.top());
-  p.setPen(art::DarkShadow); p.drawLine(page.right(), page.top(), page.right(), page.bottom()); p.drawLine(page.right(), page.bottom(), page.left(), page.bottom());
-  p.setPen(art::Shadow); p.drawLine(page.right() - 1, page.top() + 1, page.right() - 1, page.bottom() - 1); p.drawLine(page.right() - 1, page.bottom() - 1, page.left() + 1, page.bottom() - 1);
-  const QVector<QRect> rects = tabRects(tabs);
+  const QRect window = tabWindow(tabs); const QVector<QRect> rects = tabRects(tabs);
+  const int pageTop = window.top() + 22;
+  int selectedLeft = -1, selectedRight = -1;
+  for (int i = 0; i < rects.size(); ++i) if (!tabs.children[i]->hidden()) { selectedLeft = rects[i].left(); selectedRight = rects[i].right(); }
+  // Page frame.
+  p.setPen(TabEdge); p.drawLine(window.left(), selectedLeft == window.left() ? window.top() + 2 : pageTop, window.left(), window.bottom());
+  if (selectedLeft > window.left()) p.drawLine(window.left(), pageTop, selectedLeft, pageTop);
+  p.drawLine(selectedRight + 1, pageTop, window.right() - 1, pageTop);
+  p.setPen(Qt::black); p.drawLine(window.right(), pageTop + 1, window.right(), window.bottom()); p.drawLine(window.left(), window.bottom(), window.right(), window.bottom());
   for (int i = 0; i < rects.size(); ++i) {
-    const bool selected = !tabs.children[i]->hidden(); QRect t = rects[i];
-    if (selected) t.adjust(-2, -2, 2, 2);
-    p.fillRect(t.adjusted(1, 1, -1, 0), art::Face);
-    p.setPen(art::Highlight); p.drawLine(t.left(), t.bottom(), t.left(), t.top() + 2); p.drawLine(t.left() + 1, t.top() + 1, t.left() + 1, t.top() + 1); p.drawLine(t.left() + 2, t.top(), t.right() - 2, t.top());
-    p.setPen(art::DarkShadow); p.drawLine(t.right(), t.top() + 2, t.right(), t.bottom()); p.drawPoint(t.right() - 1, t.top() + 1);
-    p.setPen(art::Shadow); p.drawLine(t.right() - 1, t.top() + 2, t.right() - 1, t.bottom());
-    if (!selected) { p.setPen(art::Highlight); p.drawLine(t.left(), t.bottom() + 1, t.right(), t.bottom() + 1); }
-    drawGdiText(p, t.adjusted(2, 3, -2, -1), aimString(tabs.children[i]->titleId), selected ? TreeFont.bold() : TreeFont, Qt::black, art::Face, GdiSingleLine | GdiCenter | GdiVCenter | GdiNoPrefix);
+    const QRect t = rects[i]; const bool selected = !tabs.children[i]->hidden();
+    const int x = t.left(), r = t.right(), top = t.top(), bottom = selected ? pageTop : pageTop - 1;
+    const bool hideLeft = !selected && i > 0 && !tabs.children[i - 1]->hidden();
+    p.fillRect(QRect(x + 1, top + 1, t.width() - 2, bottom - top), art::Face);
+    // Caption first (DT_CENTER over the whole tab, as the reference shows), then the edges on top of its background.
+    drawGdiText(p, QRect(x, window.top() + 2, t.width(), 20), aimString(tabs.children[i]->titleId), selected ? TreeFont.bold() : TreeFont, Qt::black, art::Face, GdiSingleLine | GdiCenter | GdiVCenter | GdiNoPrefix);
+    p.setPen(TabEdge);
+    if (selected) { p.drawLine(x + 2, top, r - 2, top); p.drawPoint(x + 1, top + 1); p.drawPoint(r - 1, top + 1); }
+    else { p.drawLine(x + 1, top, r - 1, top); p.drawPoint(x, top + 1); p.drawPoint(r, top + 1); }
+    if (!hideLeft) p.drawLine(x, top + 2, x, bottom);
+    p.setPen(TabInner); p.drawLine(r - 1, top + 2, r - 1, bottom);
+    p.setPen(Qt::black); p.drawLine(r, top + 2, r, bottom);
   }
 }
-
 void BuddyListWindow::paintTree(QPainter &p, const QRect &area) {
   const QVector<aim::oscar::FeedbagItem> items = client_ ? client_->roster() : QVector<aim::oscar::FeedbagItem>{};
   rows_.clear();

@@ -44,6 +44,7 @@ private:
   void paintTabs(QPainter &painter, CtlObject &tabs);
   void paintTree(QPainter &painter, const QRect &area);
   QVector<QRect> tabRects(const CtlObject &tabs) const;
+  QRect tabWindow(const CtlObject &tabs) const;
   CtlObject *buttonAt(const QPoint &point) const;
   void command(int id);
   void showAwayMenu(const QRect &anchor);
