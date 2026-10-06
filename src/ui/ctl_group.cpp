@@ -116,7 +116,13 @@ void idealSize(CtlObject &o, const CtlEnvironment &env) {
       o.ideal = o.base; o.minimum = o.hint;
       if (o.base.height() == 0) o.ideal = env.textExtent(o.fontId, env.string(o.textId), o.base.width(), o.base.width() ? CtlEnvironment::StaticWrapped : CtlEnvironment::StaticLine);
       break;
-    case Kind::Trackbar: case Kind::Ate: case Kind::TabBody: case Kind::Unknown: o.ideal = o.base; o.minimum = o.hint; break;
+    case Kind::Ate:
+      o.ideal = o.base; o.minimum = o.hint;
+      // Style bit 0x1000 gives the ATE wrapper its 21 px formatting bar above the edit area (wndutils 0x1228e2d0,
+      // Research/ate_toolbar.md); the bar is part of the wrapper window, so it adds to the pane's size.
+      if (o.style & 0x1000) { o.ideal.rheight() += 21; o.minimum.rheight() += 21; }
+      break;
+    case Kind::Trackbar: case Kind::TabBody: case Kind::Unknown: o.ideal = o.base; o.minimum = o.hint; break;
     }
   }
   if (!(o.flags & Flag::StretchH)) o.minimum.setWidth(o.ideal.width());

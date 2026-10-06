@@ -7,11 +7,13 @@
 #include <QElapsedTimer>
 #include "ui/buddy_list_window.h"
 #include <QGuiApplication>
+#include <QStyleHints>
 #include <QSettings>
 #include <memory>
 
 int main(int argc, char **argv) {
   QGuiApplication app(argc, argv);
+  QGuiApplication::styleHints()->setColorScheme(Qt::ColorScheme::Light); // the classic AIM look has no dark variant
   QGuiApplication::setQuitOnLastWindowClosed(false);
   QGuiApplication::setOrganizationName(QStringLiteral("MorenoLand"));
   QGuiApplication::setApplicationName(QStringLiteral("OpenAIM"));
@@ -26,7 +28,8 @@ int main(int argc, char **argv) {
   AwayMessages away(&client,&window);
   QObject::connect(&window,&SignOnWindow::actionRequested,&messaging,[&](int id,const QString &name){if(id==139)messaging.openMessage(name);else if(id==24000)away.newMessage();else if(id>=BuddyListWindow::AwaySavedBase&&id<BuddyListWindow::AwaySavedBase+100)away.useSaved(id-BuddyListWindow::AwaySavedBase);});
   window.show();
-  if (app.arguments().contains(QStringLiteral("--ui-preview=im"))) messaging.openMessage(); // developer preview of the IM window without signing on
+  if (app.arguments().contains(QStringLiteral("--ui-preview=im"))) messaging.openMessage();
+  if (app.arguments().contains(QStringLiteral("--ui-preview=im-conversation"))) messaging.previewConversation(); // developer preview of the IM window without signing on
   std::unique_ptr<BuddyListWindow> previewBuddyList; if (app.arguments().contains(QStringLiteral("--ui-preview=buddy"))) { previewBuddyList = std::make_unique<BuddyListWindow>(&client); previewBuddyList->show(); }
 #ifdef Q_OS_WIN
   SystemTray tray(&window);

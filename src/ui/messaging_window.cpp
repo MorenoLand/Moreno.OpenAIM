@@ -16,6 +16,7 @@
 #include <QLocale>
 #include <QMoveEvent>
 #include <QPainter>
+#include <QPalette>
 #include <QPointer>
 #include <QRegularExpression>
 #include <QSettings>
@@ -44,6 +45,8 @@ const QColor Face(240, 240, 240), Shadow(160, 160, 160), Highlight(255, 255, 255
 QString aimString(quint32 id) { return aimEnvironment().string(id); }
 QFont ateFont(bool bold = false) { QFont font(QStringLiteral("Times New Roman")); font.setPixelSize(16); font.setBold(bold); return font; } // AIM default IM font: Times New Roman 12 pt
 QFont controlFont() { return CtlEnvironment::font(106); }
+// ATE panes are black text on a white window (WindowColor default 0xFFFFFF), whatever the system colour scheme is.
+QPalette atePalette() { QPalette palette; palette.setColor(QPalette::Text, Qt::black); palette.setColor(QPalette::WindowText, Qt::black); palette.setColor(QPalette::Base, Qt::white); palette.setColor(QPalette::Link, QColor(0, 0, 255)); return palette; }
 QString normalizedName(QString name) { name.remove(QLatin1Char(' ')); return name.toCaseFolded(); }
 bool isHtml(const QString &text) { return text.contains(QRegularExpression(QStringLiteral("</?[A-Za-z!][^>]*>"))); }
 
@@ -152,6 +155,11 @@ public:
   void resetPending(const QString &reason = QString()) { if (!sending_) return; restorePending(); if (!reason.isEmpty()) appendFailure(reason); requestUpdate(); }
   void appendIncoming(const QString &sender, const QString &text) { transcript_.appendMessage(sender, isHtml(text) ? text : text.toHtmlEscaped(), false); setMode(Conversation); requestUpdate(); }
   void showWindow() { show(); raise(); requestActivate(); }
+  void preview() { // developer preview: a short conversation and some compose text
+    transcript_.appendMessage(QStringLiteral("Edward"), QStringLiteral("<HTML><BODY>Hey, are you there?</BODY></HTML>"), false);
+    transcript_.appendMessage(client_ ? client_->screenName() : QStringLiteral("denveous"), aimHtml([] { static QTextDocument d; d.setPlainText(QStringLiteral("Yes, I am here.")); return std::cref(d); }().get()), true);
+    compose_.setText(QStringLiteral("Typing a reply")); setMode(Conversation); requestUpdate();
+  }
 protected:
   bool event(QEvent *event) override {
     if (event->type() == QEvent::InputMethod) { auto *input = static_cast<QInputMethodEvent *>(event); if (!input->commitString().isEmpty()) { editor().input(input->commitString(), focus_ == 0); edited(); } event->accept(); return true; }
@@ -317,7 +325,7 @@ private:
     const QRectF blockRect = editor.document.documentLayout()->blockBoundingRect(block); const qreal caretY = line.isValid() ? blockRect.top() + line.y() + line.height() : blockRect.bottom();
     editor.scroll = qBound(qreal(0), caretY - view.height() + 2, qMax(qreal(0), documentSize.height() - view.height()));
     p.save(); p.setClipRect(view); p.translate(view.left(), view.top() - editor.scroll);
-    QAbstractTextDocumentLayout::PaintContext context; context.clip = QRectF(0, editor.scroll, view.width(), view.height());
+    QAbstractTextDocumentLayout::PaintContext context; context.clip = QRectF(0, editor.scroll, view.width(), view.height()); context.palette = atePalette();
     if (editor.cursor.hasSelection()) { QAbstractTextDocumentLayout::Selection selection; selection.cursor = editor.cursor; selection.format.setBackground(QColor(0, 120, 215)); selection.format.setForeground(Qt::white); context.selections.append(selection); }
     editor.document.documentLayout()->draw(&p, context);
     if (focus_ == 1 && caretOn() && line.isValid()) { const qreal x = line.cursorToX(blockPosition), y = blockRect.top() + line.y(); p.setPen(Qt::black); p.drawLine(QPointF(blockRect.left() + x, y), QPointF(blockRect.left() + x, y + line.height())); }
@@ -328,7 +336,7 @@ private:
     const qreal maxScroll = qMax(qreal(0), transcript_.document.documentLayout()->documentSize().height() - view.height());
     transcript_.scroll = transcript_.followBottom ? maxScroll : qBound(qreal(0), transcript_.scroll, maxScroll);
     if (transcript_.scroll >= maxScroll) transcript_.followBottom = true;
-    p.save(); p.setClipRect(view); p.translate(view.left(), view.top() - transcript_.scroll); transcript_.document.drawContents(&p, QRectF(0, transcript_.scroll, view.width(), view.height())); p.restore();
+    p.save(); p.setClipRect(view); p.translate(view.left(), view.top() - transcript_.scroll); { QAbstractTextDocumentLayout::PaintContext context; context.clip = QRectF(0, transcript_.scroll, view.width(), view.height()); context.palette = atePalette(); p.setClipRect(QRectF(0, transcript_.scroll, view.width(), view.height()), Qt::IntersectClip); transcript_.document.documentLayout()->draw(&p, context); } p.restore();
   }
   void paintRateMeter(QPainter &p, const QRect &r) {
     // _Oscar_RateMeter: 15 cells, 3 px pitch ((15+1)*3 x 8); red/yellow at the low end, green when sending is allowed.
@@ -525,3 +533,4 @@ struct MessagingWindows::State {
 MessagingWindows::MessagingWindows(OscarClient *client, QWindow *owner, QObject *parent) : QObject(parent), state_(std::make_unique<State>(this, client, owner)) {}
 MessagingWindows::~MessagingWindows() { if (state_) state_->shutdown(); }
 void MessagingWindows::openMessage(const QString &recipient) { if (state_) state_->open(recipient); }
+void MessagingWindows::previewConversation() { if (state_) state_->open(QStringLiteral("edward"))->preview(); }
