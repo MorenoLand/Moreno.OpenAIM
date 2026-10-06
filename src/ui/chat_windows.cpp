@@ -1,5 +1,6 @@
 #include "chat_windows.h"
 #include "ate_link.h"
+#include "preferences.h"
 #include "art.h"
 #include "buddy_info_window.h"
 #include "ctl_window.h"
@@ -89,8 +90,11 @@ public:
     const QRgb colour = own ? 0xFF0000 : colours_.value(normalized(sender), 0x0000FF);
     QTextCursor cursor(&document(History)); cursor.movePosition(QTextCursor::End); if (!first_) cursor.insertBlock(); first_ = false;
     cursor.insertHtml(QStringLiteral("<font color=#%1><b>%2</b>:</font>&nbsp;").arg(colour, 6, 16, QLatin1Char('0')).arg(sender.toHtmlEscaped()));
-    cursor.insertHtml(text); requestUpdate();
+    const int start = cursor.position(); cursor.insertHtml(text); ate::insertSmileys(document(History), start); requestUpdate();
     if (!own) playAimSound(AimSound::ChatReceive);
+#ifdef Q_OS_WIN
+    if (!own && prefs::chatFlash() && !isActive() && handle()) { FLASHWINFO flash{sizeof(flash), reinterpret_cast<HWND>(winId()), FLASHW_ALL | FLASHW_TIMERNOFG, 0, 0}; FlashWindowEx(&flash); } // "Flash window when messages are received"
+#endif
   }
   void closedByServer() { setState(Exited); }
 protected:
@@ -107,6 +111,8 @@ protected:
     return true;
   }
   bool submitEditor(quint32 id) override { if (id == Compose) { send(); return true; } return false; }
+  bool isComposePane(quint32 id) const override { return id == Compose; }
+  qreal documentZoom(quint32 id) const override { return id == History ? prefs::textMagnification() : 1.0; }
   void command(int id) override {
     const QString selected = selectedRow(People) >= 0 && selectedRow(People) < people_.size() ? people_[selectedRow(People)] : QString();
     switch (id) {
@@ -134,7 +140,7 @@ protected:
   }
 private:
   static bool containsName(const QStringList &list, const QString &name) { for (const QString &n : list) if (normalized(n) == normalized(name)) return true; return false; }
-  static bool joinNotices() { return QSettings().value(QStringLiteral("Chat/UserJoinedMsgs"), 2).toInt() != 0; }
+  static bool joinNotices() { return prefs::chatAnnouncements(); } // Preferences > IM/Chat "Show announcements..."
   void notice(const QString &html) { QTextCursor cursor(&document(History)); cursor.movePosition(QTextCursor::End); if (!first_) cursor.insertBlock(); first_ = false; cursor.insertHtml(QStringLiteral("<font color=#000000>%1</font>").arg(html)); requestUpdate(); }
   void updateTitle() {
     // STRING 719 "Chat Room: %s" + state suffix 764-772 (none while in the room).
@@ -153,8 +159,8 @@ private:
     if (!controlEnabled(Send)) return;
     TextEditor &compose = editor(Compose); QString text = compose.document.toPlainText();
     if (text.size() > 8000) { errorBox(this, formatAimString(aimString(1886), {QString::number(text.size()), QStringLiteral("8000")})); return; }
-    if (!manager_->client()->sendChatMessage(room_.cookie, ate::html(compose.document))){ errorBox(this, aimString(1594)); return; }
-    compose.clear(); compose.cursor.setCharFormat(QTextCharFormat()); playAimSound(AimSound::ChatSend); requestUpdate(); // shown when the server reflects it
+    if (!manager_->client()->sendChatMessage(room_.cookie, ate::html(compose.document, prefs::composeWindowColor()))){ errorBox(this, aimString(1594)); return; }
+    compose.clear(); compose.cursor.setCharFormat(prefs::composeFormat()); playAimSound(AimSound::ChatSend); requestUpdate(); // shown when the server reflects it
   }
   ChatWindows *manager_;
   QString name_, message_;
@@ -272,7 +278,7 @@ ChatWindows::ChatWindows(OscarClient *client, Action action, QObject *parent) : 
   connect(client_, &OscarClient::chatMessageReceived, this, [this](const QString &cookie, const QString &sender, const QString &text) { for (const auto &window : rooms_) if (window && window->cookie() == cookie) window->message(sender, text); });
   connect(client_, &OscarClient::chatRoomClosed, this, [this](const QString &cookie, const QString &) { for (const auto &window : rooms_) if (window && window->cookie() == cookie) window->closedByServer(); });
   connect(client_, &OscarClient::chatInvitationReceived, this, [this](const aim::oscar::ChatInvitation &invitation) {
-    if (QSettings().value(QStringLiteral("Chat/BlockInvites"), 2).toInt() == 1) { client_->respondToChatInvitation(invitation, false); return; } // reason 2 in the original
+    if (prefs::blockChatInvitations()) { client_->respondToChatInvitation(invitation, false); return; } // reason 2 in the original
     auto *window = new ChatInviteReceiveWindow(this, invitation); window->show(); window->requestActivate();
   });
 }

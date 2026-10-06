@@ -53,5 +53,6 @@ private:
   void removeItem(Page *page, int list);
   void updateConnection(Page *page);
   void updateFontSizes(Page *page);
+  void showComposeDefaults(Page *page);
 #endif
 };

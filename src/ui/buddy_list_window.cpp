@@ -5,6 +5,8 @@
 #include "native_dialog.h"
 #include "ate_link.h"
 #include "away_dialog.h"
+#include "preferences.h"
+#include <shellapi.h>
 #include "user_actions.h"
 #include <QClipboard>
 #include <QStyleHints>
@@ -30,9 +32,12 @@
 namespace {
 enum : quint32 { Logo = 134, Tabs = 135, OnlinePage = 136, OnlineBody = 137, SetupPage = 142, SetupBody = 151, WebSearch = 1487, Banner = 148, Ticker = 907, TickerCaption = 908,
                  SendIm = 139, Chat = 561, Info = 138, Today = 1140, AwayButton = 1488, Preferences = 174, AddBuddy = 143, AddGroup = 145, Delete = 146, Find = 141 };
-constexpr int MenuRowHeight = 19, MenuPadding = 7, RowHeight = 16;
+constexpr int MenuRowHeight = 19, MenuPadding = 7;
 const GdiFont MenuFont{QStringLiteral("MS Sans Serif"), -13};      // matches the reference screenshot's menu bar
-const GdiFont TreeFont{QStringLiteral("Arial"), -12};              // Buddy List tree and tab captions (reference screenshot)
+const GdiFont TreeFont{QStringLiteral("Arial"), -12};              // tab captions (reference screenshot)
+// Tree font: Preferences > Buddy List > Buddy List Font (default Arial 9 pt = -12 px, the reference screenshot).
+GdiFont treeFont() { const QFont font = prefs::buddyListFont(); return GdiFont{font.family(), -font.pixelSize()}; }
+int rowHeight() { return std::max(16, gdiTextSize(treeFont(), QStringLiteral("Wg")).height() + 2); }
 const QColor Selection(255, 255, 0), OfflineText(128, 128, 128);
 QString aimString(quint32 id) { return aimEnvironment().string(id); }
 
@@ -164,11 +169,20 @@ BuddyListWindow::BuddyListWindow(OscarClient *client) : WindowBase(aimString(167
   connect(client_, &OscarClient::rosterEditFinished, this, [this](bool) { QTimer::singleShot(0, this, [this] { if (!rosterQueue_.isEmpty() && client_ && !client_->rosterEditPending()) rosterQueue_.takeFirst()(); }); });
   connect(client_, &OscarClient::loginStageChanged, this, [this](int stage) { if (stage == 0) { rosterQueue_.clear(); editGroupAfterRoster_ = 0; } });
   editTimer_.setSingleShot(true);
+  // Preferences > Buddy List "Flash Buddy List window when buddies sign on or off" (not for the burst right after sign-on).
+  connect(client_, &OscarClient::buddyPresenceChanged, this, [this](const QString &, bool) {
+#ifdef Q_OS_WIN
+    if (!prefs::flashOnSignOnOff() || !handle() || isActive() || created_.elapsed() < 5000) return;
+    FLASHWINFO flash{sizeof(flash), reinterpret_cast<HWND>(winId()), FLASHW_ALL, 3, 0}; FlashWindowEx(&flash);
+#endif
+  });
+  created_.start();
   connect(&editTimer_, &QTimer::timeout, this, [this] { beginEdit(); });
   menuBar_ = loadMenuResource(103);
   QSize outer(142, 450);
   if (group_) {
     ctlShowControl(*group_, WebSearch, false); // VALUERES 138 = 1 hides the web search group (0x112844e1)
+    ctlShowControl(*group_, Ticker, prefs::showStockTicker()); ctlShowControl(*group_, TickerCaption, prefs::showStockTicker()); // Stock Ticker "Show stock ticker in Buddy List window"
     if (CtlObject *tabs = group_->find(Tabs)) ctlSetPage(*tabs, OnlinePage);
     const QSize minimum = minimumOuter(ctlIdealSize(*group_, aimEnvironment()));
     setResizable(canvasForOuter(minimum));
@@ -313,6 +327,7 @@ void BuddyListWindow::paintTabs(QPainter &p, CtlObject &tabs) {
 void BuddyListWindow::paintTree(QPainter &p, const QRect &area) {
   const QVector<aim::oscar::FeedbagItem> items = client_ ? client_->roster() : QVector<aim::oscar::FeedbagItem>{};
   rows_.clear(); editRect_ = QRect();
+  const GdiFont TreeFont = treeFont(); const int RowHeight = rowHeight();
   const QVector<quint16> groupIds = orderedGroups(items);
   p.save(); p.setClipRect(area);
   int y = area.top() + 1 - treeScroll_;
@@ -340,7 +355,8 @@ void BuddyListWindow::paintTree(QPainter &p, const QRect &area) {
       if (collapsed) continue;
       for (const auto &item : orderedBuddies(items, groupId)) {
         if (!client_ || !client_->isOnline(item.name)) continue;
-        text(left + 21, item.name, TreeFont, Qt::black, buddySelected(item)); rows_.append({QRect(left, y, area.width(), RowHeight), item.groupId, item.itemId, item.name, false}); y += RowHeight;
+        const bool dim = prefs::dimIdleBuddies() && client_->idleMinutes(item.name) >= prefs::dimIdleMinutes(); // "Dim buddies after they have been idle for N minutes"
+        text(left + 21, item.name, TreeFont, dim ? OfflineText : QColor(Qt::black), buddySelected(item)); rows_.append({QRect(left, y, area.width(), RowHeight), item.groupId, item.itemId, item.name, false}); y += RowHeight;
       }
     }
     int total = 0, offline = 0; for (const auto &item : items) if (item.classId == 0) { ++total; if (!client_ || !client_->isOnline(item.name)) ++offline; }
@@ -478,12 +494,47 @@ void BuddyListWindow::contentKeyPress(QKeyEvent *event) {
   WindowBase::contentKeyPress(event);
 }
 bool BuddyListWindow::event(QEvent *event) {
+  // "Hide taskbar button when Buddy List window is minimized": the window leaves the taskbar; the tray icon restores it.
+  if (event->type() == QEvent::WindowStateChange && windowStates().testFlag(Qt::WindowMinimized) && prefs::hideTaskbarWhenMinimized()) QTimer::singleShot(0, this, [this] { hide(); setWindowStates(Qt::WindowNoState); });
   if (event->type() == QEvent::FocusOut && edit_ && !committing_) endEdit(true, false); // WM_KILLFOCUS commits
   return WindowBase::event(event);
 }
+bool BuddyListWindow::nativeEvent(const QByteArray &eventType, void *message, qintptr *result) {
+#ifdef Q_OS_WIN
+  // "Buddy List window can be docked on left or right of screen": dropping the window on a screen edge registers it as
+  // an application desktop toolbar (full height, reserving its width); moving it away releases the edge.
+  MSG *msg = static_cast<MSG *>(message);
+  if (msg->message == WM_ENTERSIZEMOVE && dockEdge_ >= 0) undock();
+  else if (msg->message == WM_EXITSIZEMOVE && prefs::dockable()) {
+    RECT window{}; GetWindowRect(msg->hwnd, &window); MONITORINFO monitor{sizeof(monitor)}; GetMonitorInfoW(MonitorFromWindow(msg->hwnd, MONITOR_DEFAULTTONEAREST), &monitor);
+    if (window.left <= monitor.rcWork.left + 8) dock(ABE_LEFT); else if (window.right >= monitor.rcWork.right - 8) dock(ABE_RIGHT);
+  } else if (msg->message == WM_DESTROY && dockEdge_ >= 0) undock();
+  else if (msg->message == DockCallback && msg->wParam == ABN_POSCHANGED && dockEdge_ >= 0) dock(dockEdge_);
+#endif
+  return WindowBase::nativeEvent(eventType, message, result);
+}
+#ifdef Q_OS_WIN
+void BuddyListWindow::dock(int edge) {
+  HWND window = reinterpret_cast<HWND>(winId()); RECT current{}; GetWindowRect(window, &current); const int width = current.right - current.left;
+  APPBARDATA bar{sizeof(bar)}; bar.hWnd = window; bar.uCallbackMessage = DockCallback;
+  if (dockEdge_ < 0) { if (!SHAppBarMessage(ABM_NEW, &bar)) return; undockedHeight_ = current.bottom - current.top; }
+  MONITORINFO monitor{sizeof(monitor)}; GetMonitorInfoW(MonitorFromWindow(window, MONITOR_DEFAULTTONEAREST), &monitor);
+  bar.uEdge = UINT(edge); bar.rc = monitor.rcMonitor;
+  if (edge == ABE_LEFT) bar.rc.right = bar.rc.left + width; else bar.rc.left = bar.rc.right - width;
+  SHAppBarMessage(ABM_QUERYPOS, &bar);
+  if (edge == ABE_LEFT) bar.rc.right = bar.rc.left + width; else bar.rc.left = bar.rc.right - width;
+  SHAppBarMessage(ABM_SETPOS, &bar);
+  dockEdge_ = edge; MoveWindow(window, bar.rc.left, bar.rc.top, bar.rc.right - bar.rc.left, bar.rc.bottom - bar.rc.top, TRUE);
+}
+void BuddyListWindow::undock() {
+  if (dockEdge_ < 0) return; HWND window = reinterpret_cast<HWND>(winId());
+  APPBARDATA bar{sizeof(bar)}; bar.hWnd = window; SHAppBarMessage(ABM_REMOVE, &bar); dockEdge_ = -1;
+  RECT current{}; GetWindowRect(window, &current); if (undockedHeight_ > 0) SetWindowPos(window, nullptr, 0, 0, current.right - current.left, undockedHeight_, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+}
+#endif
 void BuddyListWindow::wheelEvent(QWheelEvent *event) {
   if (!treeArea_.contains(canvasPoint(event->position().toPoint()))) { event->ignore(); return; }
-  treeScroll_ = std::max(0, treeScroll_ - event->angleDelta().y() / 120 * RowHeight * 3); requestUpdate(); event->accept();
+  treeScroll_ = std::max(0, treeScroll_ - event->angleDelta().y() / 120 * rowHeight() * 3); requestUpdate(); event->accept();
 }
 void BuddyListWindow::command(int id) {
   const QString buddy = selectedGroup_ || selectedPending_ ? QString() : selectedName_;
@@ -761,7 +812,17 @@ void BuddyListWindow::showAwayMenu(const QRect &anchor) {
   if (id) emit actionRequested(id, QString());
 }
 
-void BuddyListWindow::closeRequested() { hide(); showClosedNotice(); }
+void BuddyListWindow::preferencesChanged() {
+  if (group_) {
+    ctlShowControl(*group_, Ticker, prefs::showStockTicker()); ctlShowControl(*group_, TickerCaption, prefs::showStockTicker());
+    setResizable(canvasForOuter(minimumOuter(ctlIdealSize(*group_, aimEnvironment()))));
+  }
+  requestUpdate();
+}
+void BuddyListWindow::closeRequested() {
+  if (prefs::signOffWhenClosed()) { emit actionRequested(745, QString()); return; } // "Sign off when Buddy List window is closed"
+  hide(); showClosedNotice();
+}
 void BuddyListWindow::showClosedNotice() {
 #ifdef Q_OS_WIN
   // RT_DIALOG 305, shown when the Buddy List window is closed while signed on.

@@ -1,5 +1,6 @@
 #include "ctl_window.h"
 #include "ate_link.h"
+#include "preferences.h"
 #include "art.h"
 #include "gdi_text.h"
 #include <QAbstractTextDocumentLayout>
@@ -55,7 +56,7 @@ void CtlWindow::relayout() {
 CtlWindow::Pane &CtlWindow::pane(quint32 id) { return panes_[id]; }
 TextEditor &CtlWindow::editor(quint32 id) {
   Pane &p = pane(id);
-  if (!p.editor) { CtlObject *o = object(id); p.editor = std::make_unique<TextEditor>(o && o->kind == CtlObject::Kind::Edit ? controlFont(o->fontId) : ateFont()); }
+  if (!p.editor) { CtlObject *o = object(id); const bool compose = isComposePane(id); p.editor = std::make_unique<TextEditor>(o && o->kind == CtlObject::Kind::Edit ? controlFont(o->fontId) : compose ? prefs::composeFont() : ateFont()); if (compose) p.editor->cursor.setCharFormat(prefs::composeFormat()); }
   return *p.editor;
 }
 QTextDocument &CtlWindow::document(quint32 id) {
@@ -117,7 +118,7 @@ void CtlWindow::paintObject(QPainter &p, CtlObject &o) {
     return;
   }
   case CtlObject::Kind::Ate: {
-    p.fillRect(r, Qt::white); art::drawSunken(p, r);
+    p.fillRect(r, isComposePane(o.id) ? prefs::composeWindowColor() : QColor(Qt::white)); art::drawSunken(p, r); // compose panes use the default window colour
     const QRect bar = toolbarRect(o);
     if (bar.isValid()) { Pane &pn = pane(o.id); if (!pn.toolbar) pn.toolbar = std::make_unique<AteToolbar>(AteToolbar::Set::Chat); pn.toolbar->layout(bar); pn.toolbar->paint(p, toolPane_ == o.id ? hoveredTool_ : -1, toolPane_ == o.id ? pressedTool_ : -1, {}); }
     if (isEditable(o)) paintEditor(p, o, textRect(o), pane(o.id), false);
@@ -157,11 +158,12 @@ void CtlWindow::paintEditor(QPainter &p, const CtlObject &o, const QRect &area, 
   p.restore();
 }
 void CtlWindow::paintDocument(QPainter &p, const QRect &area, Pane &pn, quint32 id) {
-  QTextDocument &doc = document(id); doc.setTextWidth(qMax(1, area.width()));
-  const qreal maximum = qMax(qreal(0), doc.documentLayout()->documentSize().height() - area.height());
+  const qreal zoom = documentZoom(id), width = area.width() / zoom, height = area.height() / zoom;
+  QTextDocument &doc = document(id); doc.setTextWidth(qMax(qreal(1), width));
+  const qreal maximum = qMax(qreal(0), doc.documentLayout()->documentSize().height() - height);
   pn.scroll = follow_.value(id, false) ? maximum : qBound(qreal(0), pn.scroll, maximum);
-  p.save(); p.setClipRect(area); p.translate(area.left(), area.top() - pn.scroll);
-  QAbstractTextDocumentLayout::PaintContext context; context.palette = panePalette(); context.clip = QRectF(0, pn.scroll, area.width(), area.height());
+  p.save(); p.setClipRect(area); p.translate(area.left(), area.top()); p.scale(zoom, zoom); p.translate(0, -pn.scroll);
+  QAbstractTextDocumentLayout::PaintContext context; context.palette = panePalette(); context.clip = QRectF(0, pn.scroll, width, height);
   doc.documentLayout()->draw(&p, context); p.restore();
 }
 
@@ -236,10 +238,16 @@ void CtlWindow::contentMouseMove(const QPoint &point) {
 void CtlWindow::contentLeave() { hovered_ = 0; hoveredMenu_ = -1; hoveredTool_ = -1; requestUpdate(); }
 void CtlWindow::contentKeyPress(QKeyEvent *event) {
   if (event->key() == Qt::Key_Escape) { command(2); return; }
+  if (event->key() == Qt::Key_Tab && focus_ && isComposePane(focus_) && prefs::tabInsertsTab()) { editor(focus_).cursor.insertText(QStringLiteral("\t")); editorChanged(focus_); requestUpdate(); return; }
   if (event->key() == Qt::Key_Tab || event->key() == Qt::Key_Backtab) { const QList<quint32> order = focusOrder(); if (!order.isEmpty()) { const int at = order.indexOf(focus_); focus_ = order[(at + (event->key() == Qt::Key_Backtab ? order.size() - 1 : 1)) % order.size()]; requestUpdate(); } return; }
   CtlObject *o = focus_ ? object(focus_) : nullptr;
   if (!o || !isEditable(*o)) { if (event->key() == Qt::Key_Return || event->key() == Qt::Key_Enter) submitEditor(0); return; }
   const bool singleLine = o->kind == CtlObject::Kind::Edit && !(o->style & EsMultiline);
+  if (isComposePane(o->id) && event->key() == Qt::Key_Tab && prefs::tabInsertsTab()) { editor(o->id).cursor.insertText(QStringLiteral("\t")); editorChanged(o->id); requestUpdate(); return; }
+  if (isComposePane(o->id) && (event->key() == Qt::Key_Return || event->key() == Qt::Key_Enter) && prefs::enterInsertsReturn()) { // Enter = new line, Ctrl+Enter sends
+    if (event->modifiers().testFlag(Qt::ControlModifier)) submitEditor(o->id); else { editor(o->id).cursor.insertText(QStringLiteral("\n")); editorChanged(o->id); }
+    requestUpdate(); return;
+  }
   if ((event->key() == Qt::Key_Return || event->key() == Qt::Key_Enter) && o->kind == CtlObject::Kind::Edit && (o->style & EsWantReturn)) { editor(o->id).cursor.insertText(QStringLiteral("\n")); editorChanged(o->id); requestUpdate(); return; } // ES_WANTRETURN
   bool submit = false;
   if (editor(o->id).handleKey(event, singleLine, &submit)) { if (submit && !submitEditor(o->id) && !singleLine && o->kind == CtlObject::Kind::Ate) {} editorChanged(o->id); requestUpdate(); return; }

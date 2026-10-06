@@ -5,6 +5,7 @@
 #include <QPointer>
 #include <QSettings>
 #include <QTimer>
+#include <QElapsedTimer>
 #include <QAbstractNativeEventFilter>
 #include <memory>
 
@@ -77,6 +78,18 @@ private:
   void *nativeFont_ = nullptr;
   void *nativeCancel_ = nullptr;
   bool suppressPasswordTick_ = false;
+  // automatic reconnection (Sign On/Off preferences 47/48, dialog 213); delay and total time are inferred
+  static constexpr int ReconnectDelayMs = 30000, ReconnectWindowMs = 10 * 60 * 1000;
+  void startReconnect();
+  void scheduleReconnect();
+  void updateReconnectDialog();
+  void stopReconnect(bool showSignOn);
+  void applyStartup();
+  bool signedOn_ = false, reconnecting_ = false;
+  QString reconnectPassword_; // in memory only, to sign on again after a lost connection
+  QTimer reconnectTimer_;
+  QElapsedTimer reconnectClock_;
+  void *reconnectDialog_ = nullptr;
   int loginStage_ = 0;
   int hoveredAction_ = 0;
   int pressedAction_ = 0;

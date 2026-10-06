@@ -10,6 +10,7 @@
 #include <QSettings>
 #include <QSet>
 #include <QTimer>
+#include <QElapsedTimer>
 #include <memory>
 
 struct CtlObject;
@@ -23,6 +24,7 @@ public:
   ~BuddyListWindow() override;
   static constexpr int AwaySavedBase = 24100; // + index of a saved away message (Away Message submenu)
   void requestExit();
+  void preferencesChanged(); // Preferences applied: stock ticker visibility, tree font
   static void showAbout(QWindow *owner);              // Help > About (RT_DIALOG 111)
   static void showHelp(QWindow *owner, int command);  // 158 / 156 / 705 WinHelp entries
   static void runHelpCommand(QWindow *owner, const QString &screenName, int command); // 158/156/705/159/902/160
@@ -40,7 +42,13 @@ protected:
   void wheelEvent(QWheelEvent *event) override;
   void closeRequested() override;
   bool event(QEvent *event) override;
+  bool nativeEvent(const QByteArray &eventType, void *message, qintptr *result) override;
 private:
+  static constexpr unsigned DockCallback = 0x8000 + 0x4D; // WM_APP-based appbar notification
+  void dock(int edge);
+  void undock();
+  int dockEdge_ = -1, undockedHeight_ = 0;
+  QElapsedTimer created_;
   struct Row { QRect rect; quint16 groupId; quint16 itemId; QString name; bool group; bool pending = false; };
   // List Setup in-place label editing (oscarui _Oscar_Tree editor, Research/remaining_buttons.md 1.4-1.5).
   enum class EditResult { Accept, Reject, Delete };

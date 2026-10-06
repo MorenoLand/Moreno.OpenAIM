@@ -1,5 +1,8 @@
 #include "sign_on_window.h"
 #include "ate_link.h"
+#include "native_dialog.h"
+#include "preferences.h"
+#include <QElapsedTimer>
 #include "buddy_list_window.h"
 #include "preferences_window.h"
 #include "art.h"
@@ -11,6 +14,7 @@
 #include <QMouseEvent>
 #include <QScreen>
 #include <QTimer>
+#include <QDir>
 #ifdef Q_OS_WIN
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -72,13 +76,68 @@ SignOnWindow::SignOnWindow(OscarClient *client) : WindowBase(QStringLiteral("Sig
   connect(&caretTimer_, &QTimer::timeout, this, [this] { caretVisible_ = !caretVisible_; renderNow(); });
   caretTimer_.start(500);
   connect(client_, &OscarClient::statusChanged, this, [this](const QString &status) { status_ = status; renderNow(); });
-  connect(client_, &OscarClient::failed, this, [this](const QString &reason) { setLoginStage(0);status_ = reason; renderNow(); });
+  connect(client_, &OscarClient::failed, this, [this](const QString &reason) {
+    setLoginStage(0); status_ = reason; renderNow();
+    // Sign On/Off "Reconnect automatically": a lost connection is retried while the Buddy List stays (dialog 213).
+    if (signedOn_ && settings_.value(QStringLiteral("preferences/reconnect"), true).toBool()) startReconnect();
+    else if (reconnecting_) scheduleReconnect();
+  });
+  reconnectTimer_.setSingleShot(true);
+  connect(&reconnectTimer_, &QTimer::timeout, this, [this] { if (!reconnecting_) return; if (reconnectClock_.elapsed() > ReconnectWindowMs) { stopReconnect(true); return; } updateReconnectDialog(); client_->signOn(host_, port_, screenName_, reconnectPassword_); });
+  applyStartup();
   connect(client_, &OscarClient::loginStageChanged, this, &SignOnWindow::setLoginStage);
-  connect(client_, &OscarClient::rosterReady, this, [this] { if (savePassword_) storeSavedPassword(settings_, screenName_, password_); else { forgetSavedPassword(settings_, screenName_); password_.fill(QChar(0)); password_.clear(); } if(preferencesWindow_)preferencesWindow_->close(); if(buddyWindow_)buddyWindow_->deleteLater();buddyWindow_ = new BuddyListWindow(client_);buddyWindow_->QObject::setParent(this); /* top-level and unowned like the original, so it appears in the taskbar */connect(buddyWindow_,&BuddyListWindow::actionRequested,this,[this](int id,const QString &name){if(id==20002||id==174)showPreferences();else if(id==745||id==190)signOffFromTray(); /* Sign Off / Switch Screen Name: back to the Sign On window */else emit actionRequested(id,name);}); connect(buddyWindow_,&BuddyListWindow::exitAccepted,qApp,&QCoreApplication::quit); buddyWindow_->show(); hide(); });
+  connect(client_, &OscarClient::rosterReady, this, [this] { signedOn_ = true; reconnectPassword_ = password_; if (!reconnecting_ && prefs::checked(293, 1117, false)) ate::openUrl(aimEnvironment().string(1544) + QStringLiteral("?product=9&platform=1&build=2480")); /* "Show Today window at signon" */ if (reconnecting_) stopReconnect(false); if (savePassword_) storeSavedPassword(settings_, screenName_, password_); else { forgetSavedPassword(settings_, screenName_); password_.fill(QChar(0)); password_.clear(); } if(preferencesWindow_)preferencesWindow_->close(); if(buddyWindow_)buddyWindow_->deleteLater();buddyWindow_ = new BuddyListWindow(client_);buddyWindow_->QObject::setParent(this); /* top-level and unowned like the original, so it appears in the taskbar */connect(buddyWindow_,&BuddyListWindow::actionRequested,this,[this](int id,const QString &name){if(id==20002||id==174)showPreferences();else if(id==745||id==190)signOffFromTray(); /* Sign Off / Switch Screen Name: back to the Sign On window */else emit actionRequested(id,name);}); connect(buddyWindow_,&BuddyListWindow::exitAccepted,qApp,&QCoreApplication::quit); buddyWindow_->show(); hide(); });
   if (QScreen *screen = QGuiApplication::primaryScreen()) setPosition(screen->availableGeometry().center() - QPoint(width() / 2, height() / 2));
 }
 void SignOnWindow::showClient() { QWindow *target=buddyWindow_&&client_->connected()?static_cast<QWindow*>(buddyWindow_.data()):this;target->showNormal();target->raise();target->requestActivate();target->requestUpdate(); }
-void SignOnWindow::signOffFromTray() { if(buddyWindow_)buddyWindow_->hide();client_->signOff();show();requestActivate(); }
+void SignOnWindow::signOffFromTray() { signedOn_=false;reconnectPassword_.fill(QChar(0));reconnectPassword_.clear();if(reconnecting_)stopReconnect(false);if(buddyWindow_)buddyWindow_->hide();client_->signOff();show();requestActivate(); }
+void SignOnWindow::startReconnect() {
+  if (reconnecting_) { scheduleReconnect(); return; }
+  reconnecting_ = true; reconnectClock_.start(); scheduleReconnect();
+#ifdef Q_OS_WIN
+  if (!settings_.value(QStringLiteral("preferences/showReconnectDialog"), true).toBool()) return;
+  QTimer::singleShot(0, this, [this] {
+    if (!reconnecting_) return;
+    const INT_PTR result = runOriginalDialog(nullptr, 213,
+      [this](HWND dialog) { reconnectDialog_ = dialog; updateReconnectDialog(); },
+      [this](HWND dialog, int id, int) {
+        if (id == IDCANCEL) { // "Stop Trying to Reconnect"; the two check boxes turn the Sign On/Off preferences off
+          const bool hide = IsDlgButtonChecked(dialog, 48) == BST_CHECKED, noReconnect = IsDlgButtonChecked(dialog, 47) == BST_CHECKED;
+          if (hide) { settings_.setValue(QStringLiteral("preferences/showReconnectDialog"), false); settings_.setValue(QStringLiteral("nativePreferences/293/48"), 0); }
+          if (noReconnect) { settings_.setValue(QStringLiteral("preferences/reconnect"), false); settings_.setValue(QStringLiteral("nativePreferences/293/47"), 0); }
+          prefs::invalidate(); EndDialog(dialog, IDCANCEL); return true;
+        }
+        return false;
+      });
+    reconnectDialog_ = nullptr;
+    if (result == IDCANCEL && reconnecting_) stopReconnect(true);
+  });
+#endif
+}
+void SignOnWindow::scheduleReconnect() { if (reconnecting_) reconnectTimer_.start(ReconnectDelayMs); }
+void SignOnWindow::updateReconnectDialog() {
+#ifdef Q_OS_WIN
+  if (!reconnectDialog_) return;
+  const int minutes = std::max(1, int((ReconnectWindowMs - reconnectClock_.elapsed() + 59999) / 60000)); // STRING 1492 / 1493
+  const QString text = aimEnvironment().string(minutes == 1 ? 1493 : 1492).replace(QStringLiteral("%d"), QString::number(minutes));
+  SetDlgItemTextW(static_cast<HWND>(reconnectDialog_), 107, reinterpret_cast<LPCWSTR>(text.utf16()));
+#endif
+}
+void SignOnWindow::stopReconnect(bool showSignOn) {
+  reconnecting_ = false; reconnectTimer_.stop();
+#ifdef Q_OS_WIN
+  if (reconnectDialog_) { EndDialog(static_cast<HWND>(reconnectDialog_), IDOK); reconnectDialog_ = nullptr; }
+#endif
+  if (showSignOn) signOffFromTray();
+}
+// Sign On/Off "Start AIM when Windows starts": the per-user Run key.
+void SignOnWindow::applyStartup() {
+#ifdef Q_OS_WIN
+  QSettings run(QStringLiteral("HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Run"), QSettings::NativeFormat);
+  if (settings_.value(QStringLiteral("account/startWithWindows"), false).toBool()) run.setValue(QStringLiteral("OpenAIM"), QStringLiteral("\"%1\"").arg(QDir::toNativeSeparators(QCoreApplication::applicationFilePath())));
+  else run.remove(QStringLiteral("OpenAIM"));
+#endif
+}
 void SignOnWindow::exitFromTray() { if(buddyWindow_&&client_->connected()){buddyWindow_->show();buddyWindow_->requestExit();}else{
 #ifdef Q_OS_WIN
   bool suppress=false;if(settings_.value(QStringLiteral("preferences/confirmExit"),true).toBool()&&!confirmExit(suppress))return;if(suppress)settings_.setValue(QStringLiteral("preferences/confirmExit"),false);
@@ -323,7 +382,7 @@ void SignOnWindow::showPreferences(int category,int commandId) {
   connect(preferencesWindow_, &PreferencesWindow::dismissed, this, &SignOnWindow::reloadPreferences);
   preferencesWindow_->showCategory(category,commandId);
 }
-void SignOnWindow::reloadPreferences() { settings_.sync();host_ = settings_.value(QStringLiteral("connection/host"),QStringLiteral("login.oscar.aol.com")).toString(); port_ = quint16(settings_.value(QStringLiteral("connection/port"), 5190).toUInt()); savePassword_ = settings_.value(QStringLiteral("account/savePassword"), false).toBool(); autoLogin_ = settings_.value(QStringLiteral("account/autoLogin"), false).toBool();
+void SignOnWindow::reloadPreferences() { settings_.sync();prefs::invalidate();applyStartup();prefs::privacyToServer(client_);if(buddyWindow_)buddyWindow_->preferencesChanged();host_ = settings_.value(QStringLiteral("connection/host"),QStringLiteral("login.oscar.aol.com")).toString(); port_ = quint16(settings_.value(QStringLiteral("connection/port"), 5190).toUInt()); savePassword_ = settings_.value(QStringLiteral("account/savePassword"), false).toBool(); autoLogin_ = settings_.value(QStringLiteral("account/autoLogin"), false).toBool();
 #ifdef Q_OS_WIN
   if(nativeSave_) SendMessageW(static_cast<HWND>(nativeSave_),BM_SETCHECK,savePassword_?BST_CHECKED:BST_UNCHECKED,0);
   if(nativeAuto_) SendMessageW(static_cast<HWND>(nativeAuto_),BM_SETCHECK,autoLogin_?BST_CHECKED:BST_UNCHECKED,0);

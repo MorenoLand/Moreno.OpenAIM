@@ -1,6 +1,7 @@
 #pragma once
 #include "protocol.h"
 #include <QSet>
+#include <QStringList>
 #include <QTcpSocket>
 #include <QHash>
 #include <QSharedPointer>
@@ -15,9 +16,14 @@ public:
   void signOff();
   const QVector<aim::oscar::FeedbagItem> &roster() const;
   bool isOnline(const QString &screenName) const;
+  int idleMinutes(const QString &screenName) const; // 0 when not idle
+  bool isBuddyAway(const QString &screenName) const;
   QString screenName() const;
   bool connected() const;
   bool sendMessage(const QString &recipient, const QString &text);
+  bool sendAutoResponse(const QString &recipient, const QString &text); // away/idle reply, flagged with TLV 4
+  void setIdle(quint32 seconds);                                          // SNAC(01,11); 0 = no longer idle
+  QString awayText() const { return awayText_; }
   void requestUserInfo(const QString &name);
   void createChatRoom(const QString &name, quint16 exchange = 4);
   void joinChatRoom(const aim::oscar::ChatRoom &room);
@@ -33,6 +39,10 @@ public:
   bool blockUser(const QString &name);            // adds a deny (class 3) feedbag item
   bool unblockUser(const QString &name);          // removes the deny item
   bool isBlocked(const QString &name) const;
+  // Privacy: PDINFO mode (1 allow all, 2 block all, 3 allow listed, 4 block listed, 5 allow Buddy List) and the lists.
+  quint8 privacyMode() const;
+  QStringList privacyList(quint16 classId) const; // 2 = allow, 3 = block
+  bool setPrivacy(quint8 mode, const QStringList &allow, const QStringList &block);
   bool warnUser(const QString &name, bool anonymous);
   bool renameBuddy(quint16 groupId, quint16 itemId, const QString &name);
   bool moveBuddy(quint16 groupId, quint16 itemId, quint16 destinationGroupId);
@@ -48,7 +58,7 @@ signals:
   void buddyPresenceChanged(const QString &screenName, bool online); // only on an offline<->online transition
   void rosterReady();
   void loginStageChanged(int stage);
-  void messageReceived(const QString &sender, const QString &text);
+  void messageReceived(const QString &sender, const QString &text, bool autoResponse = false);
   void messageAccepted(const QString &recipient, quint64 cookie);
   void userInfoReceived(const aim::oscar::UserInfo &info);
   void operationFailed(const QString &operation, const QString &reason);
@@ -109,12 +119,15 @@ private:
   bool switchingSocket_ = false;
   QVector<aim::oscar::FeedbagItem> roster_;
   QSet<QString> onlineBuddies_;
+  struct Presence { aim::oscar::UserInfo info; qint64 received = 0; };
+  QHash<QString, Presence> presence_;
   QHash<quint32,Pending> pending_;
   QHash<QString,QSharedPointer<Service>> services_;
   QVector<aim::oscar::ChatRoom> chatCreates_;
   quint16 maxMessageLength_ = 0;
   bool chatNavRequested_ = false;
   bool away_ = false;
+  QString awayText_;
   bool rosterEditing_ = false;
   bool rosterRefreshing_ = false;
   bool rosterEditOk_ = false;

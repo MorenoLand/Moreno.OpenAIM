@@ -1,6 +1,9 @@
 #include "ate_link.h"
 #include "ctl_group.h"
 #include "native_dialog.h"
+#include "ate_toolbar.h"
+#include "preferences.h"
+#include <QTextImageFormat>
 #include <QDesktopServices>
 #include <QTextBlock>
 #include <QTextCursor>
@@ -36,7 +39,7 @@ QTextCharFormat plainFormat(const QTextCharFormat &from) {
 }
 
 namespace ate {
-QString html(const QTextDocument &document) {
+QString html(const QTextDocument &document, const QColor &background) {
   QString body;
   for (QTextBlock block = document.begin(); block.isValid(); block = block.next()) {
     if (block != document.begin()) body += QStringLiteral("<BR>");
@@ -50,6 +53,7 @@ QString html(const QTextDocument &document) {
       // A link's own blue underline is implied by <A>.
       if (!f.isAnchor() && f.foreground().style() != Qt::NoBrush && f.foreground().color() != Qt::black) font << QStringLiteral("COLOR=\"%1\"").arg(f.foreground().color().name());
       if (f.background().style() != Qt::NoBrush) font << QStringLiteral("BACK=\"%1\"").arg(f.background().color().name());
+      if (f.hasProperty(QTextFormat::FontFamilies) && !f.fontFamilies().toStringList().isEmpty()) font << QStringLiteral("FACE=\"%1\"").arg(f.fontFamilies().toStringList().first());
       const int size = f.hasProperty(HtmlSizeProperty) ? f.intProperty(HtmlSizeProperty) : 3; if (size != 3) font << QStringLiteral("SIZE=%1").arg(size);
       if (!font.isEmpty()) { open += QStringLiteral("<FONT %1>").arg(font.join(QLatin1Char(' '))); close.prepend(QStringLiteral("</FONT>")); }
       if (f.fontWeight() >= QFont::Bold) { open += QStringLiteral("<B>"); close.prepend(QStringLiteral("</B>")); }
@@ -59,9 +63,20 @@ QString html(const QTextDocument &document) {
     }
     if (inLink) body += QStringLiteral("</A>");
   }
-  return QStringLiteral("<HTML><BODY BGCOLOR=\"#ffffff\">%1</BODY></HTML>").arg(body);
+  return QStringLiteral("<HTML><BODY BGCOLOR=\"%1\">%2</BODY></HTML>").arg(background.name(), body);
 }
 
+void insertSmileys(QTextDocument &document, int from) {
+  if (!prefs::graphicalSmileys()) return;
+  for (int glyph = 0; glyph < 16; ++glyph) {
+    const QString code = AteToolbar::smileyCode(glyph); const QUrl url(QStringLiteral("aim-smiley:%1").arg(glyph));
+    if (document.resource(QTextDocument::ImageResource, url).isNull()) document.addResource(QTextDocument::ImageResource, url, AteToolbar::smileyImage(glyph));
+    for (QTextCursor found = document.find(code, from); !found.isNull(); found = document.find(code, found)) {
+      if (found.charFormat().isAnchor()) continue;
+      QTextImageFormat image; image.setName(url.toString()); image.setVerticalAlignment(QTextCharFormat::AlignMiddle); found.insertImage(image);
+    }
+  }
+}
 void openUrl(const QString &url) {
   QString target = url.trimmed(); if (target.isEmpty()) return;
   if (!target.contains(QStringLiteral("://")) && !target.startsWith(QStringLiteral("aim:"), Qt::CaseInsensitive) && !target.startsWith(QStringLiteral("mailto:"), Qt::CaseInsensitive)) target.prepend(QStringLiteral("http://"));

@@ -28,7 +28,7 @@ bool decodeFeedbagItems(const QByteArray &body, QVector<FeedbagItem> *items, QSt
 bool decodeUserScreenName(const QByteArray &body, QString *screenName);
 bool decodeUserInfo(const QByteArray &bytes, qsizetype *offset, UserInfo *user, QString *error);
 bool decodeUserInfoReply(const QByteArray &bytes, UserInfo *user, QString *error);
-QByteArray encodeInstantMessage(const QString &recipient, const QString &text, quint64 cookie);
+QByteArray encodeInstantMessage(const QString &recipient, const QString &text, quint64 cookie, bool autoResponse = false); // autoResponse: TLV 4 instead of the ack request TLV 3
 bool decodeInstantMessage(const QByteArray &bytes, InstantMessage *message, QString *error);
 QByteArray encodeChatRoom(const ChatRoom &room, bool create = false);
 bool decodeChatRoom(const QByteArray &bytes, ChatRoom *room, QString *error);

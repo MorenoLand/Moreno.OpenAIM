@@ -56,6 +56,10 @@ set(AIM_SOURCES
   src/ui/gdi_text.h
   src/ui/user_actions.cpp
   src/ui/ate_link.cpp
+  src/ui/preferences.cpp
+  src/ui/auto_responder.cpp
+  src/ui/auto_responder.h
+  src/ui/preferences.h
   src/ui/ate_link.h
   src/ui/user_actions.h
   src/ui/buddy_info_window.cpp

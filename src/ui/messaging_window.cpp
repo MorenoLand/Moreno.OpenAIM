@@ -1,5 +1,9 @@
 #include "messaging_window.h"
 #include "ate_link.h"
+#include "preferences.h"
+#include "native_dialog.h"
+#include "ate_toolbar.h"
+#include <QUrl>
 #include <QCursor>
 #include "ctl_group.h"
 #include "menu_bar.h"
@@ -62,10 +66,14 @@ public:
   void appendMessage(const QString &name, const QString &body, bool self) {
     const QString color = self ? QStringLiteral("#ff0000") : QStringLiteral("#0000ff");
     const QString separator = body.trimmed().isEmpty() ? QStringLiteral(".") : QStringLiteral(":");
+    // Preferences > IM/Chat "Always view timestamp": "Name (h:mm:ss AM):".
+    const QString stamp = prefs::alwaysTimestamp() ? QStringLiteral(" (%1)").arg(QLocale::system().toString(QTime::currentTime(), QStringLiteral("h:mm:ss AP"))) : QString();
     QTextCursor cursor(&document); cursor.movePosition(QTextCursor::End);
     if (!first_) cursor.insertBlock();
-    cursor.insertHtml(QStringLiteral("<font color=%1><b>%2</b>%3</font>&nbsp;").arg(color, name.toHtmlEscaped(), separator));
+    cursor.insertHtml(QStringLiteral("<font color=%1><b>%2</b>%3%4</font>&nbsp;").arg(color, name.toHtmlEscaped(), stamp.toHtmlEscaped(), separator));
+    const int start = cursor.position();
     cursor.insertHtml(body); first_ = false; followBottom = true;
+    ate::insertSmileys(document, start);
   }
   void appendNotice(const QString &html) { QTextCursor cursor(&document); cursor.movePosition(QTextCursor::End); if (!first_) cursor.insertBlock(); cursor.insertHtml(QStringLiteral("<hr>") + html); first_ = false; followBottom = true; }
   QTextDocument document;
@@ -97,8 +105,9 @@ void drawEtched(QPainter &p, const QRect &r) {
 class MessageWindow final : public WindowBase {
 public:
   MessageWindow(OscarClient *client, QWindow *transientParent, QObject *owner, const QString &recipient, int cascade)
-      : WindowBase(QStringLiteral("Instant Message"), defaultCanvas()), client_(client), recipient_(QFont(QStringLiteral("MS Sans Serif"), 8)), compose_(ateFont()), menu_(101), group_(loadCtlGroup(103)) {
+      : WindowBase(QStringLiteral("Instant Message"), defaultCanvas()), client_(client), recipient_(QFont(QStringLiteral("MS Sans Serif"), 8)), compose_(prefs::composeFont()), menu_(101), group_(loadCtlGroup(103)) {
     QObject::setParent(owner); Q_UNUSED(transientParent);
+    compose_.cursor.setCharFormat(prefs::composeFormat()); // Preferences > IM/Chat > Defaults for Composing Windows
     setResizable(defaultCanvas());
     recipient_.setText(recipient);
     setMode(recipient.trimmed().isEmpty() ? NewMessage : WithRecipient);
@@ -122,8 +131,11 @@ public:
   }
   void sendFailed(const QString &reason) { if (!sending_) return; restorePending(); appendFailure(reason); requestUpdate(); }
   void recordOperationFailure(const QString &message) { if (sendAttempt_) attemptError_ = message; else if (sending_) sendFailed(message); }
+  void appendPresenceNotice(const QString &text) { transcript_.appendNotice(text.toHtmlEscaped()); if (mode_ == Conversation) requestUpdate(); }
+  bool hasConversation() const { return mode_ == Conversation; }
   void resetPending(const QString &reason = QString()) { if (!sending_) return; restorePending(); if (!reason.isEmpty()) appendFailure(reason); requestUpdate(); }
-  void appendIncoming(const QString &sender, const QString &text) { transcript_.appendMessage(sender, isHtml(text) ? text : text.toHtmlEscaped(), false); setMode(Conversation); requestUpdate(); }
+  void appendIncoming(const QString &sender, const QString &text, bool autoResponse = false) { transcript_.appendMessage(autoResponse ? QString(aimString(521)).replace(QStringLiteral("%s"), sender) : sender, isHtml(text) ? text : text.toHtmlEscaped(), false); // STRING 521 "Auto response from %s"
+    setMode(Conversation); requestUpdate(); }
   void showWindow() { show(); raise(); requestActivate(); }
   void preview() { // developer preview: a short conversation and some compose text
     transcript_.appendMessage(QStringLiteral("Edward"), QStringLiteral("<HTML><BODY>Hey, are you there?</BODY></HTML>"), false);
@@ -193,6 +205,12 @@ protected:
   void contentLeave() override { if (hovered_ || hoveredMenu_ >= 0 || hoveredTool_ >= 0) { hovered_ = 0; hoveredMenu_ = -1; hoveredTool_ = -1; requestUpdate(); } }
   void contentKeyPress(QKeyEvent *event) override {
     if (event->key() == Qt::Key_Escape) { closeRequested(); return; }  // IDCANCEL closes (0x1138dbe8)
+    if (focus_ == 1 && event->key() == Qt::Key_Tab && prefs::tabInsertsTab()) { compose_.cursor.insertText(QStringLiteral("\t")); edited(); return; }
+    if (focus_ == 1 && (event->key() == Qt::Key_Return || event->key() == Qt::Key_Enter) && prefs::enterInsertsReturn()) {
+      // "Enter key inserts Return": Enter starts a new line and Ctrl+Enter sends.
+      if (event->modifiers().testFlag(Qt::ControlModifier)) command(Send); else { compose_.cursor.insertText(QStringLiteral("\n")); edited(); }
+      return;
+    }
     if (event->key() == Qt::Key_Tab || event->key() == Qt::Key_Backtab) { if (toRowShown()) focus_ = 1 - focus_; requestUpdate(); return; }
     if (event->key() == Qt::Key_F2) { command(399); return; }
     bool submit = false;
@@ -282,7 +300,7 @@ private:
   }
   void paintAte(QPainter &p, const QRect &r, bool composePane) {
     if (!r.isValid()) return;
-    p.fillRect(r, Qt::white); p.setPen(PaneBorder); p.drawRect(r.adjusted(0, 0, -1, -1));
+    p.fillRect(r, composePane ? prefs::composeWindowColor() : QColor(Qt::white)); p.setPen(PaneBorder); p.drawRect(r.adjusted(0, 0, -1, -1));
     QRect view = r.adjusted(1, 1, -1, -1);
     if (composePane) {
       const QRect toolbar(view.left(), view.top(), view.width(), ToolbarHeight);
@@ -305,11 +323,13 @@ private:
     p.restore();
   }
   void drawTranscript(QPainter &p, const QRect &view) {
-    transcript_.document.setTextWidth(qMax(1, view.width()));
-    const qreal maxScroll = qMax(qreal(0), transcript_.document.documentLayout()->documentSize().height() - view.height());
+    // Preferences > IM/Chat > Text Magnification scales the history pane (200 / 133 / 100 / 75 %).
+    const qreal zoom = prefs::textMagnification(); const qreal width = view.width() / zoom, height = view.height() / zoom;
+    transcript_.document.setTextWidth(qMax(qreal(1), width));
+    const qreal maxScroll = qMax(qreal(0), transcript_.document.documentLayout()->documentSize().height() - height);
     transcript_.scroll = transcript_.followBottom ? maxScroll : qBound(qreal(0), transcript_.scroll, maxScroll);
     if (transcript_.scroll >= maxScroll) transcript_.followBottom = true;
-    p.save(); p.setClipRect(view); p.translate(view.left(), view.top() - transcript_.scroll); { QAbstractTextDocumentLayout::PaintContext context; context.clip = QRectF(0, transcript_.scroll, view.width(), view.height()); context.palette = atePalette(); p.setClipRect(QRectF(0, transcript_.scroll, view.width(), view.height()), Qt::IntersectClip); transcript_.document.documentLayout()->draw(&p, context); } p.restore();
+    p.save(); p.setClipRect(view); p.translate(view.left(), view.top()); p.scale(zoom, zoom); p.translate(0, -transcript_.scroll); { QAbstractTextDocumentLayout::PaintContext context; context.clip = QRectF(0, transcript_.scroll, width, height); context.palette = atePalette(); p.setClipRect(QRectF(0, transcript_.scroll, width, height), Qt::IntersectClip); transcript_.document.documentLayout()->draw(&p, context); } p.restore();
   }
   void paintRateMeter(QPainter &p, const QRect &r) {
     // _Oscar_RateMeter: 15 cells, 3 px pitch ((15+1)*3 x 8); red/yellow at the low end, green when sending is allowed.
@@ -392,7 +412,7 @@ private:
     Q_UNUSED(initial); Q_UNUSED(chosen); return false;
 #endif
   }
-  static QString aimHtml(const QTextDocument &document) { return ate::html(document); }
+  static QString aimHtml(const QTextDocument &document) { return ate::html(document, prefs::composeWindowColor()); }
   void openGreeting() {
     // icbmui 0x1138e1b7: STRING 1801 with both names, STRING 1800 when there is no recipient yet.
     const QString from = client_ ? client_->screenName() : QString(), to = recipient();
@@ -433,7 +453,7 @@ private:
     const bool queued = client_->sendMessage(target, html);
     if (sendFinished) sendFinished(this); sendAttempt_ = false;
     if (!queued || !attemptError_.isEmpty()) { appendFailure(attemptError_); attemptError_.clear(); requestUpdate(); return; }
-    playAimSound(AimSound::ImSend); rememberRecipient(target); pendingRecipient_ = target; pendingText_ = html; pendingPlain_ = text; sending_ = true; compose_.clear(); compose_.cursor.setCharFormat(QTextCharFormat()); updateTitle(); requestUpdate();
+    playAimSound(AimSound::ImSend); rememberRecipient(target); pendingRecipient_ = target; pendingText_ = html; pendingPlain_ = text; sending_ = true; compose_.clear(); compose_.cursor.setCharFormat(prefs::composeFormat()); updateTitle(); requestUpdate();
   }
   void restorePending() { const QString current = compose_.text(); compose_.setText(current.isEmpty() ? pendingPlain_ : pendingPlain_ + QStringLiteral("\n") + current); pendingText_.clear(); pendingRecipient_.clear(); sending_ = false; }
   void appendFailure(const QString &reason) {
@@ -480,12 +500,27 @@ struct MessagingWindows::State {
   std::function<void(const QString &)> chatHandler;
   State(MessagingWindows *ownerValue, OscarClient *clientValue, QWindow *parentValue) : owner(ownerValue), client(clientValue), transientParent(parentValue) {
     if (!client) return;
-    QObject::connect(client, &OscarClient::messageReceived, owner, [this](const QString &sender, const QString &text) { const bool existing = byRecipient.value(normalizedName(sender)) != nullptr; playAimSound(existing ? AimSound::ImReceive : AimSound::ImFirstReceive); MessageWindow *window = open(sender); window->appendIncoming(sender, text); window->showWindow(); });
+    QObject::connect(client, &OscarClient::messageReceived, owner, [this](const QString &sender, const QString &text, bool autoResponse) {
+      const bool existing = byRecipient.value(normalizedName(sender)) != nullptr;
+      if (!existing && !autoResponse && !acceptMessage(sender, text)) return;
+      playAimSound(existing ? AimSound::ImReceive : AimSound::ImFirstReceive);
+      // Away Message "Hide windows while I'm Away": new conversations open minimized instead of popping up.
+      const bool quiet = client->away() && prefs::hideWindowsWhileAway();
+      MessageWindow *window = quiet && !existing ? openQuietly(sender) : open(sender); window->appendIncoming(sender, text, autoResponse); if (!quiet) window->showWindow();
+    });
+    // Preferences > IM/Chat "Show sign on/off notifications": STRING 1344 / 1345 in an open conversation.
+    QObject::connect(client, &OscarClient::buddyPresenceChanged, owner, [this](const QString &name, bool online) {
+      if (!prefs::imSignOnOffNotices()) return; MessageWindow *window = byRecipient.value(normalizedName(name)); if (!window || !window->hasConversation()) return;
+      QString text = aimString(online ? 1344 : 1345); text.replace(text.indexOf(QStringLiteral("%s")), 2, name); text.replace(text.indexOf(QStringLiteral("%s")), 2, QLocale::system().toString(QTime::currentTime(), QStringLiteral("h:mm:ss AP")));
+      window->appendPresenceNotice(text);
+    });
     QObject::connect(client, &OscarClient::messageAccepted, owner, [this](const QString &recipient, quint64) { for (const auto &window : windows) if (window && window->acknowledge(recipient)) return; });
     QObject::connect(client, &OscarClient::operationFailed, owner, [this](const QString &operation, const QString &reason) { const QString message = QStringLiteral("%1: %2").arg(operation, reason); if (activeAttempt) { activeAttempt->recordOperationFailure(message); return; } for (const auto &window : windows) if (window && window->isSending() && operation.startsWith(QStringLiteral("IM to "), Qt::CaseInsensitive) && normalizedName(operation.mid(6)) == normalizedName(window->pendingRecipient())) { window->sendFailed(message); return; } });
     QObject::connect(client, &OscarClient::failed, owner, [this](const QString &reason) { resetPending(reason); });
     QObject::connect(client, &OscarClient::loginStageChanged, owner, [this](int stage) { if (stage == 0) resetPending(); });
   }
+  MessageWindow *openQuietly(const QString &recipient) { quietOpen = true; MessageWindow *window = open(recipient); quietOpen = false; return window; }
+  bool quietOpen = false;
   MessageWindow *open(const QString &recipient) {
     // One window per buddy (0x1138d434).
     const QString key = normalizedName(recipient); if (!key.isEmpty() && byRecipient.contains(key) && byRecipient.value(key)) { MessageWindow *window = byRecipient.value(key); window->showWindow(); return window; }
@@ -497,7 +532,32 @@ struct MessagingWindows::State {
     window->openMessage = [this](const QString &name) { open(name); };
     window->inviteToChat = [this](const QString &name) { if (chatHandler) chatHandler(name); };
     QObject::connect(window, &QObject::destroyed, owner, [this, window] { for (auto it = byRecipient.begin(); it != byRecipient.end();) { if (it.value().isNull() || it.value().data() == window) it = byRecipient.erase(it); else ++it; } windows.removeIf([window](const QPointer<MessageWindow> &value) { return value.isNull() || value.data() == window; }); if (activeAttempt.data() == window) activeAttempt.clear(); });
-    window->showWindow(); return window;
+    if (quietOpen) window->showMinimized(); else window->showWindow(); return window;
+  }
+  // RT_DIALOG 144 "Accept Message" for a first message from someone not on the Buddy List (Preferences > IM/Chat).
+  bool acceptMessage(const QString &sender, const QString &text) {
+    if (!prefs::acceptMessageDialog() || !client) return true;
+    for (const auto &item : client->roster()) if (item.classId == 0 && normalizedName(item.name) == normalizedName(sender)) return true;
+#ifdef Q_OS_WIN
+    Q_UNUSED(text); bool dontShow = false; int choice = 0;
+    runOriginalDialog(transientParent && transientParent->handle() ? reinterpret_cast<HWND>(transientParent->winId()) : nullptr, 144,
+      [&](HWND dialog) {
+        auto set = [&](int id, QString value) { SetDlgItemTextW(dialog, id, reinterpret_cast<LPCWSTR>(value.utf16())); };
+        wchar_t buffer[1024]{}; GetDlgItemTextW(dialog, 392, buffer, 1024); set(392, formatAimString(QString::fromWCharArray(buffer), {sender}));
+        GetDlgItemTextW(dialog, 393, buffer, 1024); set(393, formatAimString(QString::fromWCharArray(buffer), {QStringLiteral("0")}));
+        GetDlgItemTextW(dialog, 255, buffer, 1024); set(255, formatAimString(QString::fromWCharArray(buffer), {sender}));
+      },
+      [&](HWND dialog, int id, int) {
+        if (id == IDOK || id == IDCANCEL || id == 390) { choice = id; dontShow = IsDlgButtonChecked(dialog, 391) == BST_CHECKED; EndDialog(dialog, id); return true; }
+        if (id == 389) { BuddyInfoWindow::open(client, sender, [this](int, const QString &name) { open(name); }); return true; }
+        return false;
+      });
+    if (dontShow) { QSettings().setValue(QStringLiteral("nativePreferences/288/357"), 0); prefs::invalidate(); }
+    if (choice == 390) { userActions::block(nullptr, client, sender); return false; }
+    return choice == IDOK;
+#else
+    Q_UNUSED(sender); Q_UNUSED(text); return true;
+#endif
   }
   void resetPending(const QString &reason = QString()) { for (const auto &window : windows) if (window) window->resetPending(reason); activeAttempt.clear(); }
   void shutdown() { for (const auto &window : windows) if (window) { window->recipientChanged = {}; window->sendStarted = {}; window->sendFinished = {}; window->openMessage = {}; delete window.data(); } windows.clear(); byRecipient.clear(); activeAttempt.clear(); }
