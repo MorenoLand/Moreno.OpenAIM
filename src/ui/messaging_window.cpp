@@ -2,6 +2,7 @@
 #include "ctl_group.h"
 #include "menu_bar.h"
 #include "sounds.h"
+#include "ate_toolbar.h"
 #include "window_base.h"
 #include <QAbstractTextDocumentLayout>
 #include <QClipboard>
@@ -38,7 +39,7 @@
 namespace {
 enum : quint32 { ToRow = 0x191, ToCombo = 0x192, History = 0x193, Compose = 0x194, Warn = 0x195, Block = 0x196, AddBuddy = 0x197, BuddyIcon = 0x198, Send = 0x199, RateMeter = 0x19a, Talk = 0x12, GetInfo = 0x16f, WarnSeparator = 0x2b7 };
 enum Mode { NewMessage = 0x11, WithRecipient = 1, Conversation = 2 };
-constexpr int ToolbarHeight = 18, SplitterBand = 4, HistoryMinimum = 20, ComposeMinimum = 40;
+constexpr int ToolbarHeight = AteToolbar::Height, SplitterBand = 4, HistoryMinimum = 20, ComposeMinimum = 40;
 const QColor Face(240, 240, 240), Shadow(160, 160, 160), Highlight(255, 255, 255), PaneBorder(130, 135, 144);
 QString aimString(quint32 id) { return aimEnvironment().string(id); }
 QFont ateFont(bool bold = false) { QFont font(QStringLiteral("Times New Roman")); font.setPixelSize(16); font.setBold(bold); return font; } // AIM default IM font: Times New Roman 12 pt
@@ -143,7 +144,7 @@ public:
   bool isSending() const { return sending_; }
   bool acknowledge(const QString &recipient) {
     if (!sending_ || normalizedName(recipient) != normalizedName(pendingRecipient_)) return false;
-    transcript_.appendMessage(client_ ? client_->screenName() : QString(), pendingText_.toHtmlEscaped().replace(QLatin1Char('\n'), QStringLiteral("<br>")), true);
+    transcript_.appendMessage(client_ ? client_->screenName() : QString(), pendingText_, true);
     pendingText_.clear(); pendingRecipient_.clear(); sending_ = false; setMode(Conversation); requestUpdate(); return true;
   }
   void sendFailed(const QString &reason) { if (!sending_) return; restorePending(); appendFailure(reason); requestUpdate(); }
@@ -192,6 +193,7 @@ protected:
       if (point.x() >= field.right() - 17) { showRecentNames(field); return; }
       focus_ = 0; placeCursor(recipient_, field.adjusted(3, 0, -18, 0), point, true); requestUpdate(); return;
     }
+    if (const int tool = toolbar_.hit(point); tool >= 0 && composeRect_.contains(point)) { pressedTool_ = tool; requestUpdate(); return; }
     if (composeText().contains(point)) { focus_ = 1; placeCursor(compose_, composeText(), point, false); requestUpdate(); return; }
     if (CtlObject *pressed = buttonAt(point)) { pressed_ = pressed->id; requestUpdate(); }
   }
@@ -199,16 +201,18 @@ protected:
     if (draggingSplitter_) { setSplitter(point.y()); requestUpdate(); return; }
     layout();
     const int menu = PaintedMenuBar::hit(menuRects_, point); CtlObject *button = buttonAt(point); const quint32 hovered = button ? button->id : 0;
+    if (const int tool = toolbar_.hit(point); tool != hoveredTool_) { hoveredTool_ = tool; requestUpdate(); }
     setCursor(mode_ == Conversation && splitterBand().contains(point) ? Qt::SizeVerCursor : composeText().contains(point) ? Qt::IBeamCursor : Qt::ArrowCursor);
     if (menu != hoveredMenu_ || hovered != hovered_) { hoveredMenu_ = menu; hovered_ = hovered; requestUpdate(); }
   }
   void contentMouseRelease(const QPoint &point, Qt::MouseButton button) override {
     if (button != Qt::LeftButton) return;
     if (draggingSplitter_) { draggingSplitter_ = false; return; }
+    if (pressedTool_ >= 0) { const int tool = pressedTool_; pressedTool_ = -1; requestUpdate(); if (toolbar_.hit(point) == tool) toolCommand(toolbar_.items()[tool].command); return; }
     const quint32 pressed = pressed_; pressed_ = 0; requestUpdate();
     CtlObject *target = buttonAt(point); if (pressed && target && target->id == pressed) command(pressed);
   }
-  void contentLeave() override { if (hovered_ || hoveredMenu_ >= 0) { hovered_ = 0; hoveredMenu_ = -1; requestUpdate(); } }
+  void contentLeave() override { if (hovered_ || hoveredMenu_ >= 0 || hoveredTool_ >= 0) { hovered_ = 0; hoveredMenu_ = -1; hoveredTool_ = -1; requestUpdate(); } }
   void contentKeyPress(QKeyEvent *event) override {
     if (event->key() == Qt::Key_Escape) { closeRequested(); return; }  // IDCANCEL closes (0x1138dbe8)
     if (event->key() == Qt::Key_Tab || event->key() == Qt::Key_Backtab) { if (toRowShown()) focus_ = 1 - focus_; requestUpdate(); return; }
@@ -301,9 +305,7 @@ private:
     QRect view = r.adjusted(1, 1, -1, -1);
     if (composePane) {
       const QRect toolbar(view.left(), view.top(), view.width(), ToolbarHeight);
-      p.fillRect(toolbar, Face); p.setPen(Shadow); p.drawLine(toolbar.bottomLeft(), toolbar.bottomRight());
-      const QImage strip = artImage(1035); // AimRes toolbar strip; exact geometry pending Research/ate_toolbar.md
-      if (!strip.isNull()) p.drawImage(QPoint(toolbar.center().x() - strip.width() / 2, toolbar.top() + (ToolbarHeight - strip.height()) / 2), strip);
+      toolbar_.layout(toolbar); toolbar_.paint(p, hoveredTool_, pressedTool_, checkedFormats());
       view.setTop(toolbar.bottom() + 1);
       drawEditor(p, view.adjusted(3, 2, -3, -2));
     } else drawTranscript(p, view.adjusted(3, 2, -3, -2));
@@ -354,6 +356,78 @@ private:
     const int id = popupMenu(this, items, canvasToGlobal(field.bottomLeft() + QPoint(0, 1)));
     if (id >= 1000 && id - 1000 < names.size()) { recipient_.setText(names[id - 1000]); focus_ = 1; edited(); }
   }
+  QList<int> checkedFormats() const {
+    // ate32 reports B/I/U state of the caret/selection to the bar (WM_USER+0x49 -> SetButtonState).
+    const QTextCharFormat format = compose_.cursor.charFormat(); QList<int> checked;
+    if (format.fontWeight() >= QFont::Bold) checked.append(AteToolbar::Bold); if (format.fontItalic()) checked.append(AteToolbar::Italic); if (format.fontUnderline()) checked.append(AteToolbar::Underline);
+    return checked;
+  }
+  void applyFormat(const QTextCharFormat &format) { if (compose_.cursor.hasSelection()) compose_.cursor.mergeCharFormat(format); else { QTextCharFormat current = compose_.cursor.charFormat(); current.merge(format); compose_.cursor.setCharFormat(current); } focus_ = 1; requestUpdate(); }
+  void toolCommand(int command) {
+    const QTextCharFormat current = compose_.cursor.charFormat(); QTextCharFormat format;
+    switch (command) {
+    case AteToolbar::Bold: format.setFontWeight(current.fontWeight() >= QFont::Bold ? QFont::Normal : QFont::Bold); applyFormat(format); return;
+    case AteToolbar::Italic: format.setFontItalic(!current.fontItalic()); applyFormat(format); return;
+    case AteToolbar::Underline: format.setFontUnderline(!current.fontUnderline()); applyFormat(format); return;
+    case AteToolbar::Smaller: case AteToolbar::Larger: case AteToolbar::NormalSize: {
+      // HTML font sizes 1..7; 3 is the default (Times New Roman 12 pt).
+      const int size = command == AteToolbar::NormalSize ? 3 : qBound(1, htmlSize(current) + (command == AteToolbar::Larger ? 1 : -1), 7);
+      format.setProperty(HtmlSizeProperty, size); format.setFontPointSize(htmlPointSize(size)); applyFormat(format); return;
+    }
+    case AteToolbar::TextColor: case AteToolbar::BackgroundColor: {
+      const bool text = command == AteToolbar::TextColor; QColor color;
+      if (!chooseColor(text ? current.foreground().color() : (current.background().style() == Qt::NoBrush ? QColor(Qt::white) : current.background().color()), color)) return;
+      if (text) format.setForeground(color); else format.setBackground(color); applyFormat(format); return;
+    }
+    case AteToolbar::Smiley: {
+      // The picker opens above the text caret (ate32 0x1201afb3).
+      const QRect caret = caretRect(); const int glyph = AteToolbar::pickSmiley(this, canvasToGlobal(QPoint(caret.left(), caret.top() - 100)));
+      if (glyph >= 0) { compose_.cursor.insertText(AteToolbar::smileyCode(glyph)); focus_ = 1; requestUpdate(); }
+      return;
+    }
+    default: return; // link, IM image and greeting are not implemented yet
+    }
+  }
+  static constexpr int HtmlSizeProperty = QTextFormat::UserProperty + 1;
+  static int htmlSize(const QTextCharFormat &format) { return format.hasProperty(HtmlSizeProperty) ? format.intProperty(HtmlSizeProperty) : 3; }
+  static qreal htmlPointSize(int size) { static const qreal points[] = {8, 10, 12, 14, 18, 24, 36}; return points[qBound(1, size, 7) - 1]; }
+  QRect caretRect() {
+    const QRect view = composeText().adjusted(3, 2, -3, -2); const QTextBlock block = compose_.cursor.block(); const QTextLayout *layout = block.layout(); const int position = compose_.cursor.position() - block.position();
+    const QTextLine line = layout ? layout->lineForTextPosition(position) : QTextLine(); const QRectF blockRect = compose_.document.documentLayout()->blockBoundingRect(block);
+    if (!line.isValid()) return QRect(view.topLeft(), QSize(1, 16));
+    return QRect(QPoint(view.left() + int(blockRect.left() + line.cursorToX(position)), view.top() + int(blockRect.top() + line.y() - compose_.scroll)), QSize(1, int(line.height())));
+  }
+  bool chooseColor(const QColor &initial, QColor &chosen) {
+#ifdef Q_OS_WIN
+    // ChooseColorA with CC_RGBINIT|CC_PREVENTFULLOPEN and a grey custom-colour ramp (ate32 0x12010970).
+    static COLORREF custom[16]; for (int i = 0; i < 16; ++i) { const int v = (i + 1) * 15; custom[i] = RGB(v, v, v); }
+    CHOOSECOLORW chooser{}; chooser.lStructSize = sizeof(chooser); chooser.hwndOwner = reinterpret_cast<HWND>(winId()); chooser.rgbResult = RGB(initial.red(), initial.green(), initial.blue()); chooser.lpCustColors = custom; chooser.Flags = CC_RGBINIT | CC_PREVENTFULLOPEN;
+    if (!ChooseColorW(&chooser)) return false;
+    chosen = QColor(GetRValue(chooser.rgbResult), GetGValue(chooser.rgbResult), GetBValue(chooser.rgbResult)); return true;
+#else
+    Q_UNUSED(initial); Q_UNUSED(chosen); return false;
+#endif
+  }
+  static QString aimHtml(const QTextDocument &document) {
+    // Outgoing IMs are HTML, as the ATE pane produces them: <B>/<I>/<U>/<FONT> runs and <BR> between lines.
+    QString body;
+    for (QTextBlock block = document.begin(); block.isValid(); block = block.next()) {
+      if (block != document.begin()) body += QStringLiteral("<BR>");
+      for (auto it = block.begin(); !it.atEnd(); ++it) {
+        const QTextFragment fragment = it.fragment(); if (!fragment.isValid()) continue;
+        const QTextCharFormat f = fragment.charFormat(); QString open, close;
+        QStringList font; if (f.foreground().style() != Qt::NoBrush && f.foreground().color() != Qt::black) font << QStringLiteral("COLOR=\"%1\"").arg(f.foreground().color().name());
+        if (f.background().style() != Qt::NoBrush) font << QStringLiteral("BACK=\"%1\"").arg(f.background().color().name());
+        if (htmlSize(f) != 3) font << QStringLiteral("SIZE=%1").arg(htmlSize(f));
+        if (!font.isEmpty()) { open += QStringLiteral("<FONT %1>").arg(font.join(QLatin1Char(' '))); close.prepend(QStringLiteral("</FONT>")); }
+        if (f.fontWeight() >= QFont::Bold) { open += QStringLiteral("<B>"); close.prepend(QStringLiteral("</B>")); }
+        if (f.fontItalic()) { open += QStringLiteral("<I>"); close.prepend(QStringLiteral("</I>")); }
+        if (f.fontUnderline()) { open += QStringLiteral("<U>"); close.prepend(QStringLiteral("</U>")); }
+        body += open + fragment.text().toHtmlEscaped() + close;
+      }
+    }
+    return QStringLiteral("<HTML><BODY BGCOLOR=\"#ffffff\">%1</BODY></HTML>").arg(body);
+  }
   void command(quint32 id) {
     switch (id) {
     case Send: case 1: send(); return;
@@ -377,12 +451,13 @@ private:
     if (target.isEmpty()) { errorBox(aimString(525)); focus_ = 0; requestUpdate(); return; }  // STRING 525
     if (!client_ || !client_->connected()) { errorBox(aimString(542)); return; }            // STRING 542
     sendAttempt_ = true; attemptError_.clear(); if (sendStarted) sendStarted(this);
-    const bool queued = client_->sendMessage(target, text);
+    const QString html = aimHtml(compose_.document);
+    const bool queued = client_->sendMessage(target, html);
     if (sendFinished) sendFinished(this); sendAttempt_ = false;
     if (!queued || !attemptError_.isEmpty()) { appendFailure(attemptError_); attemptError_.clear(); requestUpdate(); return; }
-    playAimSound(AimSound::ImSend); rememberRecipient(target); pendingRecipient_ = target; pendingText_ = text; sending_ = true; compose_.clear(); updateTitle(); requestUpdate();
+    playAimSound(AimSound::ImSend); rememberRecipient(target); pendingRecipient_ = target; pendingText_ = html; pendingPlain_ = text; sending_ = true; compose_.clear(); compose_.cursor.setCharFormat(QTextCharFormat()); updateTitle(); requestUpdate();
   }
-  void restorePending() { const QString current = compose_.text(); compose_.setText(current.isEmpty() ? pendingText_ : pendingText_ + QStringLiteral("\n") + current); pendingText_.clear(); pendingRecipient_.clear(); sending_ = false; }
+  void restorePending() { const QString current = compose_.text(); compose_.setText(current.isEmpty() ? pendingPlain_ : pendingPlain_ + QStringLiteral("\n") + current); pendingText_.clear(); pendingRecipient_.clear(); sending_ = false; }
   void appendFailure(const QString &reason) {
     // Delivery failures become history notices: STRING 545 for an unavailable user, 546 with the error code otherwise.
     const QString name = recipient().toHtmlEscaped(); const QRegularExpressionMatch code = QRegularExpression(QStringLiteral("0x([0-9a-fA-F]{4})")).match(reason);
@@ -408,7 +483,9 @@ private:
   QVector<QRect> menuRects_;
   QRect historyRect_, composeRect_;
   Mode mode_ = NewMessage;
-  QString pendingRecipient_, pendingText_, attemptError_;
+  QString pendingRecipient_, pendingText_, pendingPlain_, attemptError_;
+  AteToolbar toolbar_{AteToolbar::Set::InstantMessage};
+  int hoveredTool_ = -1, pressedTool_ = -1;
   int focus_ = 1, hoveredMenu_ = -1, openMenu_ = -1, splitterY_ = -1;
   quint32 hovered_ = 0, pressed_ = 0;
   bool sending_ = false, sendAttempt_ = false, draggingSplitter_ = false;

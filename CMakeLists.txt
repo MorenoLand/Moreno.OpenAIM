@@ -48,6 +48,8 @@ set(AIM_SOURCES
   src/ui/menu_bar.h
   src/ui/sounds.cpp
   src/ui/sounds.h
+  src/ui/ate_toolbar.cpp
+  src/ui/ate_toolbar.h
   src/ui/ctl_group.cpp
   src/ui/ctl_group.h
   src/ui/native_dialog.cpp
@@ -65,7 +67,7 @@ else()
 endif()
 target_link_libraries(openaim PRIVATE Qt6::Gui Qt6::Network)
 if(WIN32)
-  target_link_libraries(openaim PRIVATE comctl32 comdlg32 shell32 ole32 crypt32 dwmapi winmm)
+  target_link_libraries(openaim PRIVATE comctl32 comdlg32 shell32 ole32 crypt32 dwmapi winmm msimg32)
   if(MSVC)
     target_link_options(openaim PRIVATE /MANIFEST:NO)
   endif()
