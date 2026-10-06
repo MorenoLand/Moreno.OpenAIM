@@ -21,6 +21,7 @@ public:
   void signOffFromTray();
   void exitFromTray();
   void showPreferences(int category=293,int commandId=0);
+  void nativeCommand(int id, int notice); // WM_COMMAND from the native sign-on controls
   bool nativeEventFilter(const QByteArray &eventType, void *message, qintptr *result) override;
 signals:
   void actionRequested(int id,const QString &screenName);
@@ -75,6 +76,7 @@ private:
   void *nativeAuto_ = nullptr;
   void *nativeFont_ = nullptr;
   void *nativeCancel_ = nullptr;
+  bool suppressPasswordTick_ = false;
   int loginStage_ = 0;
   int hoveredAction_ = 0;
   int pressedAction_ = 0;

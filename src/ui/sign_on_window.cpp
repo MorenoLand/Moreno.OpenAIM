@@ -15,6 +15,7 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
+#include <commctrl.h>
 #include <vector>
 #include <wincrypt.h>
 #endif
@@ -43,6 +44,12 @@ void storeSavedPassword(QSettings &settings, const QString &screenName, const QS
   Q_UNUSED(settings); Q_UNUSED(screenName); Q_UNUSED(password);
 #endif
 }
+#ifdef Q_OS_WIN
+LRESULT CALLBACK signOnSubclass(HWND window, UINT message, WPARAM wParam, LPARAM lParam, UINT_PTR, DWORD_PTR data) {
+  if (message == WM_COMMAND && lParam) reinterpret_cast<SignOnWindow *>(data)->nativeCommand(LOWORD(wParam), HIWORD(wParam));
+  return DefSubclassProc(window, message, wParam, lParam);
+}
+#endif
 void forgetSavedPassword(QSettings &settings, const QString &screenName) { if (!screenName.trimmed().isEmpty()) settings.remove(passwordKey(screenName)); }
 }
 SignOnWindow::SignOnWindow(OscarClient *client) : WindowBase(QStringLiteral("Sign On"), QSize(212, 378)), client_(client), logo_(QStringLiteral(":/aim/signon.gif")), helpIcon_(transparentBitmap(QStringLiteral(":/aim/signon-help.bmp"),0x00ccccccu)), setupIcon_(transparentBitmap(QStringLiteral(":/aim/setup-wrench.bmp"))), signOnIcon_(transparentBitmap(QStringLiteral(":/aim/signon-button.bmp"))) {
@@ -79,6 +86,7 @@ void SignOnWindow::exitFromTray() { if(buddyWindow_&&client_->connected()){buddy
 SignOnWindow::~SignOnWindow() {
 #ifdef Q_OS_WIN
   QGuiApplication::instance()->removeNativeEventFilter(this);
+  if (nativeName_ && handle()) RemoveWindowSubclass(reinterpret_cast<HWND>(winId()), signOnSubclass, 1);
   for(void *control : {nativeName_,nativePassword_,nativeSave_,nativeAuto_,nativeCancel_}) if(control&&IsWindow(static_cast<HWND>(control))) DestroyWindow(static_cast<HWND>(control));
   for (void *font : {nativeFont_, nativeFontEdit_, nativeFontCombo_}) if (font) DeleteObject(static_cast<HFONT>(font));
 #endif
@@ -143,6 +151,8 @@ void SignOnWindow::initializeNativeControls() {
   SendMessageW(static_cast<HWND>(nativeAuto_),BM_SETCHECK,autoLogin_?BST_CHECKED:BST_UNCHECKED,0);
   SendMessageW(static_cast<HWND>(nativePassword_),EM_SETLIMITTEXT,32,0);
   SendMessageW(static_cast<HWND>(nativeName_),CB_LIMITTEXT,32,0);
+  // Control notifications (WM_COMMAND) are sent, not posted, so the application event filter never sees them.
+  SetWindowSubclass(owner, signOnSubclass, 1, reinterpret_cast<DWORD_PTR>(this));
   SetFocus(static_cast<HWND>(nativeName_));
 #endif
 }
@@ -153,11 +163,6 @@ bool SignOnWindow::nativeEventFilter(const QByteArray &, void *message, qintptr 
   if (msg->message==WM_COMMAND && msg->hwnd==owner) {
     int id=LOWORD(msg->wParam), notice=HIWORD(msg->wParam);
     if(id==193&&notice==BN_CLICKED&&loginStage_){cancelSignOn();if(result)*result=0;return true;}
-    auto text=[](HWND control) { int length=GetWindowTextLengthW(control); std::vector<wchar_t> buffer(size_t(length)+1); GetWindowTextW(control,buffer.data(),length+1); return QString::fromWCharArray(buffer.data()); };
-    if(id==195&&(notice==CBN_EDITCHANGE||notice==CBN_SELCHANGE)) screenName_=text(static_cast<HWND>(nativeName_));
-    if(id==197&&notice==EN_CHANGE) password_=text(static_cast<HWND>(nativePassword_));
-    if(id==198&&notice==BN_CLICKED) { savePassword_=SendMessageW(static_cast<HWND>(nativeSave_),BM_GETCHECK,0,0)==BST_CHECKED; settings_.setValue("account/savePassword",savePassword_); if(!savePassword_)forgetSavedPassword(settings_,screenName_); }
-    if(id==199&&notice==BN_CLICKED) { autoLogin_=SendMessageW(static_cast<HWND>(nativeAuto_),BM_GETCHECK,0,0)==BST_CHECKED; settings_.setValue("account/autoLogin",autoLogin_); }
   }
   bool owns=msg->hwnd==owner||IsChild(owner,msg->hwnd);
   if(owns&&msg->message==WM_KEYDOWN) {
@@ -169,6 +174,29 @@ bool SignOnWindow::nativeEventFilter(const QByteArray &, void *message, qintptr 
   Q_UNUSED(message); Q_UNUSED(result);
 #endif
   return false;
+}
+void SignOnWindow::nativeCommand(int id, int notice) {
+#ifdef Q_OS_WIN
+  auto text=[](HWND control) { int length=GetWindowTextLengthW(control); std::vector<wchar_t> buffer(size_t(length)+1); GetWindowTextW(control,buffer.data(),length+1); return QString::fromWCharArray(buffer.data()); };
+  auto setCheck=[](void *control,bool on){SendMessageW(static_cast<HWND>(control),BM_SETCHECK,on?BST_CHECKED:BST_UNCHECKED,0);};
+  if(id==193&&notice==BN_CLICKED&&loginStage_){cancelSignOn();return;}
+  if(id==195&&(notice==CBN_EDITCHANGE||notice==CBN_SELCHANGE)) {
+    if(notice==CBN_SELCHANGE){const int index=int(SendMessageW(static_cast<HWND>(nativeName_),CB_GETCURSEL,0,0));std::vector<wchar_t> buffer(size_t(std::max<LRESULT>(0,SendMessageW(static_cast<HWND>(nativeName_),CB_GETLBTEXTLEN,index,0)))+1);SendMessageW(static_cast<HWND>(nativeName_),CB_GETLBTEXT,index,reinterpret_cast<LPARAM>(buffer.data()));screenName_=QString::fromWCharArray(buffer.data());}
+    else screenName_=text(static_cast<HWND>(nativeName_));
+    // A screen name with a stored password brings it back; any other name starts with an empty password.
+    const QString saved=loadSavedPassword(settings_,screenName_.trimmed());
+    if(!saved.isEmpty()||!password_.isEmpty()){password_=saved;suppressPasswordTick_=true;SetWindowTextW(static_cast<HWND>(nativePassword_),reinterpret_cast<LPCWSTR>(password_.utf16()));suppressPasswordTick_=false;}
+  }
+  if(id==197&&notice==EN_CHANGE) {
+    const bool wasEmpty=password_.isEmpty(); password_=text(static_cast<HWND>(nativePassword_));
+    // Typing a password ticks Save Password and Auto-login.
+    if(!suppressPasswordTick_&&wasEmpty&&!password_.isEmpty()){savePassword_=autoLogin_=true;setCheck(nativeSave_,true);setCheck(nativeAuto_,true);settings_.setValue("account/savePassword",true);settings_.setValue("account/autoLogin",true);}
+  }
+  if(id==198&&notice==BN_CLICKED) { savePassword_=SendMessageW(static_cast<HWND>(nativeSave_),BM_GETCHECK,0,0)==BST_CHECKED; settings_.setValue("account/savePassword",savePassword_); if(!savePassword_){forgetSavedPassword(settings_,screenName_);if(autoLogin_){autoLogin_=false;setCheck(nativeAuto_,false);settings_.setValue("account/autoLogin",false);}} }
+  if(id==199&&notice==BN_CLICKED) { autoLogin_=SendMessageW(static_cast<HWND>(nativeAuto_),BM_GETCHECK,0,0)==BST_CHECKED; settings_.setValue("account/autoLogin",autoLogin_); if(autoLogin_&&!savePassword_){savePassword_=true;setCheck(nativeSave_,true);settings_.setValue("account/savePassword",true);} }
+#else
+  Q_UNUSED(id); Q_UNUSED(notice);
+#endif
 }
 void SignOnWindow::paintContent(QPainter &p) {
   p.fillRect(QRect(1, TitleBarHeight, canvasWidth() - 2, canvasHeight() - TitleBarHeight - 1), art::Face);
@@ -233,6 +261,8 @@ void SignOnWindow::contentMousePress(const QPoint &point, Qt::MouseButton button
   else if (formRect(961).contains(point)) autoLogin_ = !autoLogin_;
   else return;
   settings_.setValue(QStringLiteral("account/screenName"), screenName_);
+  settings_.setValue(QStringLiteral("account/savePassword"), savePassword_); settings_.setValue(QStringLiteral("account/autoLogin"), autoLogin_);
+  if (!savePassword_) forgetSavedPassword(settings_, screenName_);
   settings_.setValue(QStringLiteral("account/savePassword"), savePassword_);
   settings_.setValue(QStringLiteral("account/autoLogin"), autoLogin_);
   renderNow();

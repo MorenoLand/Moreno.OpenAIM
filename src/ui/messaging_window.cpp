@@ -1,4 +1,6 @@
 #include "messaging_window.h"
+#include "ate_link.h"
+#include <QCursor>
 #include "ctl_group.h"
 #include "menu_bar.h"
 #include "sounds.h"
@@ -359,12 +361,15 @@ private:
       if (text) format.setForeground(color); else format.setBackground(color); applyFormat(format); return;
     }
     case AteToolbar::Smiley: {
-      // The picker opens above the text caret (ate32 0x1201afb3).
-      const QRect caret = caretRect(); const int glyph = AteToolbar::pickSmiley(this, canvasToGlobal(QPoint(caret.left(), caret.top() - 100)));
+      // The picker is centred 100 px above the mouse pointer (ate32 0x1201afb3: GetCursorPos, TPM_CENTERALIGN).
+      const int glyph = AteToolbar::pickSmiley(this, QCursor::pos() - QPoint(0, 100));
       if (glyph >= 0) { compose_.cursor.insertText(AteToolbar::smileyCode(glyph)); focus_ = 1; requestUpdate(); }
       return;
     }
-    default: return; // link, IM image and greeting are not implemented yet
+    case AteToolbar::Link: if (ate::editLink(this, compose_.cursor)) edited(); focus_ = 1; requestUpdate(); return;
+    case AteToolbar::Greeting: openGreeting(); return;
+    case AteToolbar::ConnectImage: this->command(818); return; // same as People > Connect to Send IM Image
+    default: return;
     }
   }
   static constexpr int HtmlSizeProperty = QTextFormat::UserProperty + 1;
@@ -387,25 +392,12 @@ private:
     Q_UNUSED(initial); Q_UNUSED(chosen); return false;
 #endif
   }
-  static QString aimHtml(const QTextDocument &document) {
-    // Outgoing IMs are HTML, as the ATE pane produces them: <B>/<I>/<U>/<FONT> runs and <BR> between lines.
-    QString body;
-    for (QTextBlock block = document.begin(); block.isValid(); block = block.next()) {
-      if (block != document.begin()) body += QStringLiteral("<BR>");
-      for (auto it = block.begin(); !it.atEnd(); ++it) {
-        const QTextFragment fragment = it.fragment(); if (!fragment.isValid()) continue;
-        const QTextCharFormat f = fragment.charFormat(); QString open, close;
-        QStringList font; if (f.foreground().style() != Qt::NoBrush && f.foreground().color() != Qt::black) font << QStringLiteral("COLOR=\"%1\"").arg(f.foreground().color().name());
-        if (f.background().style() != Qt::NoBrush) font << QStringLiteral("BACK=\"%1\"").arg(f.background().color().name());
-        if (htmlSize(f) != 3) font << QStringLiteral("SIZE=%1").arg(htmlSize(f));
-        if (!font.isEmpty()) { open += QStringLiteral("<FONT %1>").arg(font.join(QLatin1Char(' '))); close.prepend(QStringLiteral("</FONT>")); }
-        if (f.fontWeight() >= QFont::Bold) { open += QStringLiteral("<B>"); close.prepend(QStringLiteral("</B>")); }
-        if (f.fontItalic()) { open += QStringLiteral("<I>"); close.prepend(QStringLiteral("</I>")); }
-        if (f.fontUnderline()) { open += QStringLiteral("<U>"); close.prepend(QStringLiteral("</U>")); }
-        body += open + fragment.text().toHtmlEscaped() + close;
-      }
-    }
-    return QStringLiteral("<HTML><BODY BGCOLOR=\"#ffffff\">%1</BODY></HTML>").arg(body);
+  static QString aimHtml(const QTextDocument &document) { return ate::html(document); }
+  void openGreeting() {
+    // icbmui 0x1138e1b7: STRING 1801 with both names, STRING 1800 when there is no recipient yet.
+    const QString from = client_ ? client_->screenName() : QString(), to = recipient();
+    QString url = aimString(to.isEmpty() ? 1800 : 1801); url.replace(url.indexOf(QStringLiteral("%s")), 2, from); if (!to.isEmpty()) url.replace(url.indexOf(QStringLiteral("%s")), 2, to);
+    ate::openUrl(url);
   }
   void command(quint32 id) {
     switch (id) {
@@ -420,6 +412,8 @@ private:
     case AddBuddy: case 670: userActions::addBuddy(this, client_, recipient()); return;  // Add Buddy button / People > Add to Buddy List...
     case GetInfo: case 669: BuddyInfoWindow::open(client_, recipient(), [this](int, const QString &name) { if (openMessage) openMessage(name); }); return; // Get Info button / People > Info...
     case 665: if (inviteToChat) inviteToChat(recipient()); return;                       // People > Send Chat Invitation... / &Chat
+    case 1106: toolCommand(AteToolbar::Link); return;                                  // Insert > Web Link...
+    case 1198: case 0x4B0: openGreeting(); return;                                        // People > Send IM Greeting
     default: return; // Talk (voice) and the rendezvous items are not implemented
     }
   }

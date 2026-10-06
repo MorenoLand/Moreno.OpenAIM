@@ -1,4 +1,5 @@
 #include "ctl_window.h"
+#include "ate_link.h"
 #include "art.h"
 #include "gdi_text.h"
 #include <QAbstractTextDocumentLayout>
@@ -188,6 +189,7 @@ void CtlWindow::toolbarCommand(quint32 ateId, int command) {
   case AteToolbar::Bold: format.setFontWeight(current.fontWeight() >= QFont::Bold ? QFont::Normal : QFont::Bold); break;
   case AteToolbar::Italic: format.setFontItalic(!current.fontItalic()); break;
   case AteToolbar::Underline: format.setFontUnderline(!current.fontUnderline()); break;
+  case AteToolbar::Link: if (ate::editLink(this, ed.cursor)) editorChanged(ateId); requestUpdate(); return;
   case AteToolbar::Smiley: { const int glyph = AteToolbar::pickSmiley(this, QCursor::pos() - QPoint(0, 100)); if (glyph >= 0) ed.cursor.insertText(AteToolbar::smileyCode(glyph)); requestUpdate(); return; }
   default: return;
   }
