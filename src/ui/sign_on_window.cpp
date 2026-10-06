@@ -75,7 +75,7 @@ void SignOnWindow::initializeNativeControls() {
 }
 bool SignOnWindow::nativeEventFilter(const QByteArray &, void *message, qintptr *result) {
 #ifdef Q_OS_WIN
-  if (!nativeName_) return false;
+  if (!nativeName_||!handle()) return false; // winId() would recreate a destroyed native window and re-enter this filter
   MSG *msg = static_cast<MSG *>(message); HWND owner=reinterpret_cast<HWND>(winId());
   if (msg->message==WM_COMMAND && msg->hwnd==owner) {
     int id=LOWORD(msg->wParam), notice=HIWORD(msg->wParam);

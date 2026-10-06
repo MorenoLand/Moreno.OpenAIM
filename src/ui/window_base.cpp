@@ -37,7 +37,7 @@ bool WindowBase::event(QEvent *event) {
   if (event->type() == QEvent::Close && !routingClose_) { routingClose_=true; closeRequested(); routingClose_=false; event->ignore(); return true; }
   if (event->type() == QEvent::Expose) {
 #ifdef Q_OS_WIN
-    HWND window=reinterpret_cast<HWND>(winId());LONG_PTR style=GetWindowLongPtrW(window,GWL_STYLE),fixed=style&~(WS_POPUP|WS_THICKFRAME|WS_MAXIMIZEBOX);if(style!=fixed){SetWindowLongPtrW(window,GWL_STYLE,fixed);SetWindowPos(window,nullptr,0,0,0,0,SWP_NOMOVE|SWP_NOSIZE|SWP_NOZORDER|SWP_FRAMECHANGED);}
+    HWND window=reinterpret_cast<HWND>(winId());LONG_PTR style=GetWindowLongPtrW(window,GWL_STYLE),fixed=resizable_?(style&~WS_POPUP)|WS_THICKFRAME|WS_MAXIMIZEBOX:style&~(WS_POPUP|WS_THICKFRAME|WS_MAXIMIZEBOX);if(style!=fixed){SetWindowLongPtrW(window,GWL_STYLE,fixed);SetWindowPos(window,nullptr,0,0,0,0,SWP_NOMOVE|SWP_NOSIZE|SWP_NOZORDER|SWP_FRAMECHANGED);}
 #endif
     renderNow();
   }
@@ -45,12 +45,29 @@ bool WindowBase::event(QEvent *event) {
   if (event->type() == QEvent::Leave) contentLeave();
   return QWindow::event(event);
 }
-void WindowBase::resizeEvent(QResizeEvent *event) { backingStore_.resize(event->size()); renderNow(); }
-void WindowBase::setCanvasSize(const QSize &size) { canvasSize_=size;QSize clientSize=size;
+void WindowBase::resizeEvent(QResizeEvent *event) { if(resizable_)canvasSize_=canvasSizeFor(event->size()); backingStore_.resize(event->size()); renderNow(); }
+QSize WindowBase::clientSizeFor(const QSize &canvas) const {
 #ifdef Q_OS_WIN
-  clientSize-=QSize(2,TitleBarHeight+3);
+  return canvas-QSize(2,TitleBarHeight+3);
+#else
+  return canvas;
 #endif
-  setMaximumSize(clientSize);setMinimumSize(clientSize);resize(clientSize);requestUpdate();
+}
+QSize WindowBase::canvasSizeFor(const QSize &client) const {
+#ifdef Q_OS_WIN
+  return client+QSize(2,TitleBarHeight+3);
+#else
+  return client;
+#endif
+}
+void WindowBase::setCanvasSize(const QSize &size) { canvasSize_=size;const QSize clientSize=clientSizeFor(size);
+  if(!resizable_){setMaximumSize(clientSize);setMinimumSize(clientSize);}resize(clientSize);requestUpdate();
+}
+// buddyui.ocm creates the Buddy List with WS_OVERLAPPEDWINDOW and answers WM_GETMINMAXINFO with the control group's ideal size; sign-on/dialog windows omit WS_THICKFRAME.
+void WindowBase::setResizable(const QSize &minimumCanvas) { resizable_=true;setMinimumSize(clientSizeFor(minimumCanvas));setMaximumSize(QSize(16777215,16777215));
+#ifdef Q_OS_WIN
+  setFlags(flags()&~Qt::MSWindowsFixedSizeDialogHint);HWND window=reinterpret_cast<HWND>(winId());SetWindowLongPtrW(window,GWL_STYLE,(GetWindowLongPtrW(window,GWL_STYLE)&~WS_POPUP)|WS_THICKFRAME|WS_MAXIMIZEBOX);SetWindowPos(window,nullptr,0,0,0,0,SWP_NOMOVE|SWP_NOSIZE|SWP_NOZORDER|SWP_FRAMECHANGED);
+#endif
 }
 void WindowBase::renderNow() {
   if (!isExposed() || width() <= 0 || height() <= 0) return;
@@ -107,13 +124,19 @@ QRect WindowBase::titleButtonRect(int index) const {
 }
 void WindowBase::setCaptionButtons(bool minimize, bool maximize, bool closeButton) { captionMask_ = (minimize ? 1 : 0) | (maximize ? 2 : 0) | (closeButton ? 4 : 0);
 #ifdef Q_OS_WIN
-  Qt::WindowFlags flags=Qt::Window|Qt::WindowTitleHint|Qt::WindowSystemMenuHint|Qt::MSWindowsFixedSizeDialogHint;
+  Qt::WindowFlags flags=Qt::Window|Qt::WindowTitleHint|Qt::WindowSystemMenuHint;if(!resizable_)flags|=Qt::MSWindowsFixedSizeDialogHint;
   if(minimize) flags|=Qt::WindowMinimizeButtonHint; if(maximize) flags|=Qt::WindowMaximizeButtonHint; if(closeButton) flags|=Qt::WindowCloseButtonHint; setFlags(flags);
 #endif
   renderNow(); }
 void WindowBase::mousePressEvent(QMouseEvent *event) {
   const QPoint point = event->position().toPoint();
 #ifndef Q_OS_WIN
+  if (resizable_ && event->button() == Qt::LeftButton) {
+    constexpr int grip = 4; Qt::Edges edges;
+    if (point.x() < grip) edges |= Qt::LeftEdge; else if (point.x() >= width() - grip) edges |= Qt::RightEdge;
+    if (point.y() < grip) edges |= Qt::TopEdge; else if (point.y() >= height() - grip) edges |= Qt::BottomEdge;
+    if (edges && startSystemResize(edges)) return;
+  }
   if (event->button() == Qt::LeftButton && point.y() < TitleBarHeight) {
     for (int i = 0; i < 3; ++i) if ((captionMask_ & (1 << i)) && titleButtonRect(i).contains(point)) { if (i == 0) setVisibility(QWindow::Minimized); else if (i == 2) closeRequested(); return; }
     if (point.x() < width() - ((captionMask_ & 1) + ((captionMask_ >> 1) & 1) + ((captionMask_ >> 2) & 1)) * 45) { startSystemMove(); return; }

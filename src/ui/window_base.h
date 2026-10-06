@@ -31,6 +31,7 @@ protected:
   void setCaptionButtons(bool minimize, bool maximize, bool closeButton);
   bool confirmExit(bool &suppress);
   void setCanvasSize(const QSize &size);
+  void setResizable(const QSize &minimumCanvas);
   virtual void paintContent(QPainter &painter) = 0;
   virtual void contentMousePress(const QPoint &point, Qt::MouseButton button);
   virtual void contentMouseRelease(const QPoint &point, Qt::MouseButton button);
@@ -50,10 +51,13 @@ protected:
 private:
   void drawFrame(QPainter &painter);
   QRect titleButtonRect(int index) const;
+  QSize clientSizeFor(const QSize &canvas) const;
+  QSize canvasSizeFor(const QSize &client) const;
   QBackingStore backingStore_;
   QImage icon_;
   QString title_;
   int captionMask_ = 7;
   QSize canvasSize_;
   bool routingClose_ = false;
+  bool resizable_ = false;
 };
