@@ -230,8 +230,10 @@ void OscarClient::sendBuddyRequests() {
 }
 void OscarClient::setBuddyOnline(const QString &name, bool online) {
   const QString key = name.toCaseFolded();
+  const bool changed = online ? !onlineBuddies_.contains(key) : onlineBuddies_.contains(key);
   if (online) onlineBuddies_.insert(key); else onlineBuddies_.remove(key);
   emit rosterChanged();
+  if (changed) emit buddyPresenceChanged(name, online);
 }
 void OscarClient::fail(const QString &reason) {
   if (phase_ == Phase::Failed || phase_ == Phase::Idle) return;

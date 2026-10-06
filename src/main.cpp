@@ -3,6 +3,8 @@
 #include "ui/system_tray.h"
 #include "ui/messaging_window.h"
 #include "ui/away_dialog.h"
+#include "ui/sounds.h"
+#include <QElapsedTimer>
 #include "ui/buddy_list_window.h"
 #include <QGuiApplication>
 #include <QSettings>
@@ -14,6 +16,11 @@ int main(int argc, char **argv) {
   QGuiApplication::setOrganizationName(QStringLiteral("MorenoLand"));
   QGuiApplication::setApplicationName(QStringLiteral("OpenAIM"));
   OscarClient client;
+  installSoundDefaults(); setSoundClient(&client);
+  // Buddy arrival/departure sounds; the presence burst right after sign-on is not announced (inferred: the original stays quiet at sign-on).
+  QElapsedTimer signedOn; QObject::connect(&client,&OscarClient::rosterReady,&client,[&]{signedOn.start();});
+  QObject::connect(&client,&OscarClient::loginStageChanged,&client,[&](int stage){if(stage==0)signedOn.invalidate();});
+  QObject::connect(&client,&OscarClient::buddyPresenceChanged,&client,[&](const QString &,bool online){if(signedOn.isValid()&&signedOn.elapsed()>3000)playAimSound(online?AimSound::BuddyArrival:AimSound::BuddyDeparture);});
   SignOnWindow window(&client);
   MessagingWindows messaging(&client,&window);
   AwayMessages away(&client,&window);

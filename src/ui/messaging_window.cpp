@@ -1,6 +1,7 @@
 #include "messaging_window.h"
 #include "ctl_group.h"
 #include "menu_bar.h"
+#include "sounds.h"
 #include "window_base.h"
 #include <QAbstractTextDocumentLayout>
 #include <QClipboard>
@@ -379,7 +380,7 @@ private:
     const bool queued = client_->sendMessage(target, text);
     if (sendFinished) sendFinished(this); sendAttempt_ = false;
     if (!queued || !attemptError_.isEmpty()) { appendFailure(attemptError_); attemptError_.clear(); requestUpdate(); return; }
-    rememberRecipient(target); pendingRecipient_ = target; pendingText_ = text; sending_ = true; compose_.clear(); updateTitle(); requestUpdate();
+    playAimSound(AimSound::ImSend); rememberRecipient(target); pendingRecipient_ = target; pendingText_ = text; sending_ = true; compose_.clear(); updateTitle(); requestUpdate();
   }
   void restorePending() { const QString current = compose_.text(); compose_.setText(current.isEmpty() ? pendingText_ : pendingText_ + QStringLiteral("\n") + current); pendingText_.clear(); pendingRecipient_.clear(); sending_ = false; }
   void appendFailure(const QString &reason) {
@@ -423,7 +424,7 @@ struct MessagingWindows::State {
   QPointer<MessageWindow> activeAttempt;
   State(MessagingWindows *ownerValue, OscarClient *clientValue, QWindow *parentValue) : owner(ownerValue), client(clientValue), transientParent(parentValue) {
     if (!client) return;
-    QObject::connect(client, &OscarClient::messageReceived, owner, [this](const QString &sender, const QString &text) { MessageWindow *window = open(sender); window->appendIncoming(sender, text); window->showWindow(); });
+    QObject::connect(client, &OscarClient::messageReceived, owner, [this](const QString &sender, const QString &text) { const bool existing = byRecipient.value(normalizedName(sender)) != nullptr; playAimSound(existing ? AimSound::ImReceive : AimSound::ImFirstReceive); MessageWindow *window = open(sender); window->appendIncoming(sender, text); window->showWindow(); });
     QObject::connect(client, &OscarClient::messageAccepted, owner, [this](const QString &recipient, quint64) { for (const auto &window : windows) if (window && window->acknowledge(recipient)) return; });
     QObject::connect(client, &OscarClient::operationFailed, owner, [this](const QString &operation, const QString &reason) { const QString message = QStringLiteral("%1: %2").arg(operation, reason); if (activeAttempt) { activeAttempt->recordOperationFailure(message); return; } for (const auto &window : windows) if (window && window->isSending() && operation.startsWith(QStringLiteral("IM to "), Qt::CaseInsensitive) && normalizedName(operation.mid(6)) == normalizedName(window->pendingRecipient())) { window->sendFailed(message); return; } });
     QObject::connect(client, &OscarClient::failed, owner, [this](const QString &reason) { resetPending(reason); });

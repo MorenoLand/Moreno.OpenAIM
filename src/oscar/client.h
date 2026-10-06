@@ -41,6 +41,7 @@ signals:
   void statusChanged(const QString &status);
   void failed(const QString &reason);
   void rosterChanged();
+  void buddyPresenceChanged(const QString &screenName, bool online); // only on an offline<->online transition
   void rosterReady();
   void loginStageChanged(int stage);
   void messageReceived(const QString &sender, const QString &text);

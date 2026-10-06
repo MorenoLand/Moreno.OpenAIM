@@ -383,6 +383,21 @@
     <file alias="104">menus/104.bin</file>
     <file alias="105">menus/105.bin</file>
   </qresource>
+  <qresource prefix="/aim/sounds">
+    <file alias="cashregister.wav">sounds/cashregister.wav</file>
+    <file alias="dooropen.wav">sounds/dooropen.wav</file>
+    <file alias="doorslam.wav">sounds/doorslam.wav</file>
+    <file alias="imrcv.wav">sounds/imrcv.wav</file>
+    <file alias="imsend.wav">sounds/imsend.wav</file>
+    <file alias="moo.wav">sounds/moo.wav</file>
+    <file alias="newalert.wav">sounds/newalert.wav</file>
+    <file alias="newmail.wav">sounds/newmail.wav</file>
+    <file alias="phone.wav">sounds/phone.wav</file>
+    <file alias="ring.wav">sounds/ring.wav</file>
+    <file alias="talkbeg.wav">sounds/talkbeg.wav</file>
+    <file alias="talkend.wav">sounds/talkend.wav</file>
+    <file alias="talkstop.wav">sounds/talkstop.wav</file>
+  </qresource>
   <qresource prefix="/aim/valueres">
     <file alias="100">valueres/100.bin</file>
     <file alias="101">valueres/101.bin</file>
