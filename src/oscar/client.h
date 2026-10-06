@@ -1,0 +1,122 @@
+#pragma once
+#include "protocol.h"
+#include <QSet>
+#include <QTcpSocket>
+#include <QHash>
+#include <QSharedPointer>
+#include <QTimer>
+
+class OscarClient final : public QObject {
+  Q_OBJECT
+public:
+  explicit OscarClient(QObject *parent = nullptr);
+  ~OscarClient() override;
+  void signOn(const QString &host, quint16 port, const QString &screenName, const QString &password);
+  void signOff();
+  const QVector<aim::oscar::FeedbagItem> &roster() const;
+  bool isOnline(const QString &screenName) const;
+  QString screenName() const;
+  bool connected() const;
+  bool sendMessage(const QString &recipient, const QString &text);
+  void requestUserInfo(const QString &name);
+  void createChatRoom(const QString &name, quint16 exchange = 4);
+  void joinChatRoom(const aim::oscar::ChatRoom &room);
+  bool sendChatMessage(const QString &roomCookie, const QString &text);
+  bool inviteToChat(const QString &recipient, const QString &roomCookie, const QString &text);
+  void respondToChatInvitation(const aim::oscar::ChatInvitation &invitation, bool accept);
+  void leaveChatRoom(const QString &cookie);
+  bool applyRoster(const QVector<aim::oscar::FeedbagItem> &desiredFullRoster);
+  bool addGroup(const QString &name);
+  bool renameGroup(quint16 groupId, const QString &name);
+  bool removeGroup(quint16 groupId);
+  bool addBuddy(quint16 groupId, const QString &name);
+  bool renameBuddy(quint16 groupId, quint16 itemId, const QString &name);
+  bool moveBuddy(quint16 groupId, quint16 itemId, quint16 destinationGroupId);
+  bool removeBuddy(quint16 groupId, quint16 itemId);
+  bool rosterEditPending() const;
+  bool setAway(const QString &text);
+  bool clearAway();
+  bool away() const;
+signals:
+  void statusChanged(const QString &status);
+  void failed(const QString &reason);
+  void rosterChanged();
+  void rosterReady();
+  void loginStageChanged(int stage);
+  void messageReceived(const QString &sender, const QString &text);
+  void messageAccepted(const QString &recipient, quint64 cookie);
+  void userInfoReceived(const aim::oscar::UserInfo &info);
+  void operationFailed(const QString &operation, const QString &reason);
+  void chatRoomReady(const aim::oscar::ChatRoom &room);
+  void chatParticipantsChanged(const QString &cookie, const QVector<aim::oscar::UserInfo> &participants);
+  void chatMessageReceived(const QString &cookie, const QString &sender, const QString &text);
+  void chatInvitationReceived(const aim::oscar::ChatInvitation &invitation);
+  void chatRoomClosed(const QString &cookie, const QString &reason);
+  void rosterEditFinished(bool success);
+  void awayChanged(bool away);
+private slots:
+  void onConnected();
+  void onReadyRead();
+  void onSocketError(QAbstractSocket::SocketError error);
+private:
+  enum class Phase { Idle, AuthConnecting, AuthChallenge, AuthLogin, BosConnecting, BosHost, BosRoster, Online, Failed };
+  void sendFrame(quint8 channel, const QByteArray &payload);
+  void sendSnac(quint16 family, quint16 subgroup, const QByteArray &body = {});
+  void handleFrame(const aim::oscar::FlapFrame &frame);
+  void handleSnac(const aim::oscar::Snac &snac);
+  void beginBos(const QString &host, quint16 port, const QByteArray &cookie);
+  void beginRoster();
+  void sendBuddyRequests();
+  void setBuddyOnline(const QString &screenName, bool online);
+  void fail(const QString &reason);
+  struct Pending { QString operation; quint16 family = 0; aim::oscar::ChatRoom room; };
+  struct Service { QTcpSocket *socket = nullptr; QString key; quint16 family = 0; quint16 sequence = 0; quint16 osVersion = 4; QByteArray buffer; QByteArray cookie; aim::oscar::ChatRoom room; QHash<QString,aim::oscar::UserInfo> participants; QHash<quint32,QString> requests; bool ready = false; bool announced = false; bool closing = false; };
+  quint32 request(quint16 family, quint16 subgroup, const QByteArray &body, const QString &operation, const aim::oscar::ChatRoom &room = {});
+  void requestService(quint16 family, const aim::oscar::ChatRoom &room = {});
+  void openService(quint16 family, const aim::oscar::ChatRoom &room, const QString &host, quint16 port, const QByteArray &cookie);
+  void readService(const QSharedPointer<Service> &service);
+  void handleService(const QSharedPointer<Service> &service, const aim::oscar::Snac &snac);
+  bool sendService(const QSharedPointer<Service> &service, quint16 family, quint16 subgroup, const QByteArray &body = {}, const QString &operation = {});
+  void closeService(const QSharedPointer<Service> &service, const QString &reason);
+  void closeServices();
+  void flushChatCreates();
+  bool handleMessaging(const aim::oscar::Snac &snac);
+  struct RosterStep { quint16 subgroup; aim::oscar::FeedbagItem item; };
+  bool handleRosterEdits(const aim::oscar::Snac &snac);
+  void advanceRosterEdit();
+  void finishRosterCluster(bool success);
+  void cancelRosterEdit();
+  void syncBuddySubscriptions(const QVector<aim::oscar::FeedbagItem> &before);
+  bool rosterError(const QString &reason);
+  QTcpSocket socket_;
+  QByteArray receiveBuffer_;
+  QString authHost_;
+  quint16 authPort_ = 0;
+  QString bosHost_;
+  quint16 bosPort_ = 0;
+  QByteArray cookie_;
+  QString screenName_;
+  QByteArray password_;
+  quint16 sequence_ = 0;
+  quint32 requestId_ = 1;
+  Phase phase_ = Phase::Idle;
+  bool switchingSocket_ = false;
+  QVector<aim::oscar::FeedbagItem> roster_;
+  QSet<QString> onlineBuddies_;
+  QHash<quint32,Pending> pending_;
+  QHash<QString,QSharedPointer<Service>> services_;
+  QVector<aim::oscar::ChatRoom> chatCreates_;
+  quint16 maxMessageLength_ = 0;
+  bool chatNavRequested_ = false;
+  bool away_ = false;
+  bool rosterEditing_ = false;
+  bool rosterRefreshing_ = false;
+  bool rosterEditOk_ = false;
+  bool incomingCluster_ = false;
+  QVector<aim::oscar::FeedbagItem> incomingRoster_;
+  QVector<RosterStep> rosterSteps_;
+  qsizetype rosterStep_ = 0;
+  quint32 rosterRequest_ = 0;
+  quint32 rosterRefreshRequest_ = 0;
+  QTimer rosterTimeout_;
+};

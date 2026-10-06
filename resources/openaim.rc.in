@@ -1,0 +1,6 @@
+1 ICON "@CMAKE_CURRENT_SOURCE_DIR@/resources/aim-exe.ico"
+118 ICON "@CMAKE_CURRENT_SOURCE_DIR@/resources/aim-warning.ico"
+120 ICON "@CMAKE_CURRENT_SOURCE_DIR@/resources/aim-online.ico"
+121 ICON "@CMAKE_CURRENT_SOURCE_DIR@/resources/aim-away.ico"
+122 ICON "@CMAKE_CURRENT_SOURCE_DIR@/resources/aim-offline.ico"
+1 24 "@CMAKE_CURRENT_SOURCE_DIR@/resources/openaim.manifest"

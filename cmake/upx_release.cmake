@@ -1,0 +1,7 @@
+if(NOT AIM_BUILD_CONFIG MATCHES "^(Release|MinSizeRel)$")
+  return()
+endif()
+execute_process(COMMAND "${AIM_UPX_EXECUTABLE}" --best --lzma --force-overwrite --no-env "${AIM_OUTPUT_FILE}" RESULT_VARIABLE _upx_result)
+if(NOT _upx_result STREQUAL "0")
+  message(WARNING "UPX could not pack ${AIM_OUTPUT_FILE}; exit code: ${_upx_result}")
+endif()

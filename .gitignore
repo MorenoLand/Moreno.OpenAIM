@@ -1,0 +1,10 @@
+/build/
+/bin/
+/CMakeFiles/
+/CMakeCache.txt
+/cmake_install.cmake
+/Makefile
+/.vs/
+*.suo
+*.user
+CMakeUserPresets.json
