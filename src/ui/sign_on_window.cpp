@@ -6,14 +6,42 @@
 #include <QKeyEvent>
 #include <QMouseEvent>
 #include <QScreen>
+#include <QTimer>
 #ifdef Q_OS_WIN
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
 #include <windows.h>
 #include <vector>
+#include <wincrypt.h>
 #endif
 
+namespace {
+// Saved passwords are kept per screen name. OSCAR's weak MD5 login (AIM 3.5-4.7) needs the plain password, so it is
+// stored encrypted for the current Windows user with DPAPI; other platforms do not persist it yet.
+QString passwordKey(const QString &screenName) { QString name = screenName; name.remove(QLatin1Char(' ')); return QStringLiteral("accounts/%1/password").arg(name.toCaseFolded()); }
+QString loadSavedPassword(QSettings &settings, const QString &screenName) {
+#ifdef Q_OS_WIN
+  QByteArray bytes = settings.value(passwordKey(screenName)).toByteArray(); if (screenName.trimmed().isEmpty() || bytes.isEmpty()) return {};
+  DATA_BLOB source{DWORD(bytes.size()), reinterpret_cast<BYTE *>(bytes.data())}, plain{};
+  if (!CryptUnprotectData(&source, nullptr, nullptr, nullptr, nullptr, CRYPTPROTECT_UI_FORBIDDEN, &plain)) return {};
+  QString text = QString::fromUtf8(reinterpret_cast<const char *>(plain.pbData), int(plain.cbData)); SecureZeroMemory(plain.pbData, plain.cbData); LocalFree(plain.pbData); return text;
+#else
+  Q_UNUSED(settings); Q_UNUSED(screenName); return {};
+#endif
+}
+void storeSavedPassword(QSettings &settings, const QString &screenName, const QString &password) {
+#ifdef Q_OS_WIN
+  if (screenName.trimmed().isEmpty()) return;
+  QByteArray bytes = password.toUtf8(); DATA_BLOB source{DWORD(bytes.size()), reinterpret_cast<BYTE *>(bytes.data())}, encrypted{};
+  if (CryptProtectData(&source, nullptr, nullptr, nullptr, nullptr, CRYPTPROTECT_UI_FORBIDDEN, &encrypted)) { settings.setValue(passwordKey(screenName), QByteArray(reinterpret_cast<const char *>(encrypted.pbData), int(encrypted.cbData))); LocalFree(encrypted.pbData); }
+  SecureZeroMemory(bytes.data(), size_t(bytes.size()));
+#else
+  Q_UNUSED(settings); Q_UNUSED(screenName); Q_UNUSED(password);
+#endif
+}
+void forgetSavedPassword(QSettings &settings, const QString &screenName) { if (!screenName.trimmed().isEmpty()) settings.remove(passwordKey(screenName)); }
+}
 SignOnWindow::SignOnWindow(OscarClient *client) : WindowBase(QStringLiteral("Sign On"), QSize(212, 378)), client_(client), logo_(QStringLiteral(":/aim/signon.gif")), helpIcon_(transparentBitmap(QStringLiteral(":/aim/signon-help.bmp"),0x00ccccccu)), setupIcon_(transparentBitmap(QStringLiteral(":/aim/setup-wrench.bmp"))), signOnIcon_(transparentBitmap(QStringLiteral(":/aim/signon-button.bmp"))) {
   screenName_ = settings_.value(QStringLiteral("account/screenName")).toString();
   screenNameLabel_ = transparentBitmap(QStringLiteral(":/aim/screen-name.bmp"));
@@ -23,6 +51,8 @@ SignOnWindow::SignOnWindow(OscarClient *client) : WindowBase(QStringLiteral("Sig
   port_ = quint16(settings_.value(QStringLiteral("connection/port"), 5190).toUInt());
   savePassword_ = settings_.value(QStringLiteral("account/savePassword"), false).toBool();
   autoLogin_ = settings_.value(QStringLiteral("account/autoLogin"), false).toBool();
+  if (savePassword_) password_ = loadSavedPassword(settings_, screenName_);
+  QTimer::singleShot(0, this, [this] { if (autoLogin_ && savePassword_ && !screenName_.isEmpty() && !password_.isEmpty()) signOn(); });
 #ifdef Q_OS_WIN
   QGuiApplication::instance()->installNativeEventFilter(this);
 #endif
@@ -31,7 +61,7 @@ SignOnWindow::SignOnWindow(OscarClient *client) : WindowBase(QStringLiteral("Sig
   connect(client_, &OscarClient::statusChanged, this, [this](const QString &status) { status_ = status; renderNow(); });
   connect(client_, &OscarClient::failed, this, [this](const QString &reason) { setLoginStage(0);status_ = reason; renderNow(); });
   connect(client_, &OscarClient::loginStageChanged, this, &SignOnWindow::setLoginStage);
-  connect(client_, &OscarClient::rosterReady, this, [this] { password_.fill(QChar(0)); password_.clear(); if(preferencesWindow_)preferencesWindow_->close(); if(buddyWindow_)buddyWindow_->deleteLater();buddyWindow_ = new BuddyListWindow(client_);buddyWindow_->QObject::setParent(this); buddyWindow_->setTransientParent(this);connect(buddyWindow_,&BuddyListWindow::actionRequested,this,[this](int id,const QString &name){if(id==20002||id==174)showPreferences();else if(id==745)signOffFromTray();else emit actionRequested(id,name);}); connect(buddyWindow_,&BuddyListWindow::exitAccepted,qApp,&QCoreApplication::quit); buddyWindow_->show(); hide(); });
+  connect(client_, &OscarClient::rosterReady, this, [this] { if (savePassword_) storeSavedPassword(settings_, screenName_, password_); else { forgetSavedPassword(settings_, screenName_); password_.fill(QChar(0)); password_.clear(); } if(preferencesWindow_)preferencesWindow_->close(); if(buddyWindow_)buddyWindow_->deleteLater();buddyWindow_ = new BuddyListWindow(client_);buddyWindow_->QObject::setParent(this); buddyWindow_->setTransientParent(this);connect(buddyWindow_,&BuddyListWindow::actionRequested,this,[this](int id,const QString &name){if(id==20002||id==174)showPreferences();else if(id==745)signOffFromTray();else emit actionRequested(id,name);}); connect(buddyWindow_,&BuddyListWindow::exitAccepted,qApp,&QCoreApplication::quit); buddyWindow_->show(); hide(); });
   if (QScreen *screen = QGuiApplication::primaryScreen()) setPosition(screen->availableGeometry().center() - QPoint(width() / 2, height() / 2));
 }
 void SignOnWindow::showClient() { QWindow *target=buddyWindow_&&client_->connected()?static_cast<QWindow*>(buddyWindow_.data()):this;target->showNormal();target->raise();target->requestActivate();target->requestUpdate(); }
@@ -83,7 +113,7 @@ bool SignOnWindow::nativeEventFilter(const QByteArray &, void *message, qintptr 
     auto text=[](HWND control) { int length=GetWindowTextLengthW(control); std::vector<wchar_t> buffer(size_t(length)+1); GetWindowTextW(control,buffer.data(),length+1); return QString::fromWCharArray(buffer.data()); };
     if(id==195&&(notice==CBN_EDITCHANGE||notice==CBN_SELCHANGE)) screenName_=text(static_cast<HWND>(nativeName_));
     if(id==197&&notice==EN_CHANGE) password_=text(static_cast<HWND>(nativePassword_));
-    if(id==198&&notice==BN_CLICKED) { savePassword_=SendMessageW(static_cast<HWND>(nativeSave_),BM_GETCHECK,0,0)==BST_CHECKED; settings_.setValue("account/savePassword",savePassword_); }
+    if(id==198&&notice==BN_CLICKED) { savePassword_=SendMessageW(static_cast<HWND>(nativeSave_),BM_GETCHECK,0,0)==BST_CHECKED; settings_.setValue("account/savePassword",savePassword_); if(!savePassword_)forgetSavedPassword(settings_,screenName_); }
     if(id==199&&notice==BN_CLICKED) { autoLogin_=SendMessageW(static_cast<HWND>(nativeAuto_),BM_GETCHECK,0,0)==BST_CHECKED; settings_.setValue("account/autoLogin",autoLogin_); }
   }
   bool owns=msg->hwnd==owner||IsChild(owner,msg->hwnd);

@@ -232,7 +232,12 @@
     <file alias="117">fontdesc/117.bin</file>
   </qresource>
   <qresource prefix="/aim/menus">
+    <file alias="100">menus/100.bin</file>
     <file alias="101">menus/101.bin</file>
+    <file alias="102">menus/102.bin</file>
+    <file alias="103">menus/103.bin</file>
+    <file alias="104">menus/104.bin</file>
+    <file alias="105">menus/105.bin</file>
   </qresource>
   <qresource prefix="/aim/messaging">
     <file alias="4.bmp">messaging/bitmap-4.bmp</file>
