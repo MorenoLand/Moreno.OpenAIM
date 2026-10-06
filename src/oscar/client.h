@@ -30,6 +30,9 @@ public:
   bool renameGroup(quint16 groupId, const QString &name);
   bool removeGroup(quint16 groupId);
   bool addBuddy(quint16 groupId, const QString &name);
+  bool blockUser(const QString &name);            // adds a deny (class 3) feedbag item
+  bool isBlocked(const QString &name) const;
+  bool warnUser(const QString &name, bool anonymous);
   bool renameBuddy(quint16 groupId, quint16 itemId, const QString &name);
   bool moveBuddy(quint16 groupId, quint16 itemId, quint16 destinationGroupId);
   bool removeBuddy(quint16 groupId, quint16 itemId);
@@ -55,6 +58,7 @@ signals:
   void chatRoomClosed(const QString &cookie, const QString &reason);
   void rosterEditFinished(bool success);
   void awayChanged(bool away);
+  void warnCompleted(const QString &screenName, quint16 delta, quint16 newLevel); // newLevel in tenths of a percent
 private slots:
   void onConnected();
   void onReadyRead();

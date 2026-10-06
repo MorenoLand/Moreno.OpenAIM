@@ -50,6 +50,7 @@ struct Recorder {
   QVector<Message> messages;
   QStringList accepted;
   QVector<UserInfo> infos;
+  QVector<quint16> warnLevels;
   QVector<QPair<QString, QString>> opFailures;
   QVector<ChatRoom> roomsReady;
   QHash<QString, QStringList> participants;
@@ -67,6 +68,7 @@ struct Recorder {
     QObject::connect(&client, &OscarClient::messageReceived, ctx, [this](const QString &f, const QString &t) { messages.append({f, t}); });
     QObject::connect(&client, &OscarClient::messageAccepted, ctx, [this](const QString &r, quint64) { accepted.append(r); });
     QObject::connect(&client, &OscarClient::userInfoReceived, ctx, [this](const UserInfo &i) { infos.append(i); });
+    QObject::connect(&client, &OscarClient::warnCompleted, ctx, [this](const QString &, quint16, quint16 level) { warnLevels.append(level); });
     QObject::connect(&client, &OscarClient::operationFailed, ctx, [this](const QString &o, const QString &r) { opFailures.append({o, r}); });
     QObject::connect(&client, &OscarClient::chatRoomReady, ctx, [this](const ChatRoom &r) { roomsReady.append(r); });
     QObject::connect(&client, &OscarClient::chatParticipantsChanged, ctx, [this](const QString &c, const QVector<UserInfo> &p) {
@@ -176,6 +178,16 @@ void scenarioUserInfo(Recorder &a, Recorder &b) {
   else check("user info 1->2", same(a.infos.last().screenName, b.name), "screen name was " + a.infos.last().screenName);
 }
 
+void scenarioWarn(Recorder &a, Recorder &b) {
+  // Anonymous warning between the two test accounts: SNAC(04,08) -> SNAC(04,09).
+  const qsizetype failuresBefore = a.opFailures.size();
+  a.client.warnUser(b.name, true);
+  const bool got = waitFor([&] { return !a.warnLevels.isEmpty() || a.opFailures.size() > failuresBefore; });
+  if (!got) fail("warn 1->2 (anonymous)", "timeout");
+  else if (a.warnLevels.isEmpty()) fail("warn 1->2 (anonymous)", a.lastOpFailure());
+  else check("warn 1->2 (anonymous)", a.warnLevels.last() > 0, "new level " + QString::number(a.warnLevels.last()));
+}
+
 void scenarioChat(Recorder &a, Recorder &b) {
   const QString roomName = QStringLiteral("selftest%1").arg(QRandomGenerator::global()->bounded(100000));
   a.client.createChatRoom(roomName, 4);
@@ -277,6 +289,7 @@ int main(int argc, char **argv) {
   } else {
     scenarioMessaging(a, b);
     scenarioUserInfo(a, b);
+    scenarioWarn(a, b);
     scenarioChat(a, b);
     scenarioBuddies(a, b);
   }
