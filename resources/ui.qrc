@@ -142,6 +142,7 @@
     <file alias="1028">art/1028.bmp</file>
     <file alias="1029">art/1029.bmp</file>
     <file alias="1035">art/1035.bmp</file>
+    <file alias="1036">art/1036.bmp</file>
   </qresource>
   <qresource prefix="/aim/artwork">
     <file alias="1">artwork/1.bin</file>
@@ -374,6 +375,12 @@
     <file alias="115">fontdesc/115.bin</file>
     <file alias="116">fontdesc/116.bin</file>
     <file alias="117">fontdesc/117.bin</file>
+  </qresource>
+  <qresource prefix="/aim/icons">
+    <file alias="100">icons/100.ico</file>
+    <file alias="101">icons/101.ico</file>
+    <file alias="108">icons/108.ico</file>
+    <file alias="110">icons/110.ico</file>
   </qresource>
   <qresource prefix="/aim/menus">
     <file alias="100">menus/100.bin</file>

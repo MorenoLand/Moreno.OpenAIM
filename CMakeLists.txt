@@ -50,6 +50,10 @@ set(AIM_SOURCES
   src/ui/sounds.h
   src/ui/ate_toolbar.cpp
   src/ui/ate_toolbar.h
+  src/ui/art.cpp
+  src/ui/art.h
+  src/ui/gdi_text.cpp
+  src/ui/gdi_text.h
   src/ui/ctl_group.cpp
   src/ui/ctl_group.h
   src/ui/native_dialog.cpp
