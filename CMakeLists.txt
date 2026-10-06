@@ -54,6 +54,10 @@ set(AIM_SOURCES
   src/ui/art.h
   src/ui/gdi_text.cpp
   src/ui/gdi_text.h
+  src/ui/user_actions.cpp
+  src/ui/user_actions.h
+  src/ui/buddy_info_window.cpp
+  src/ui/buddy_info_window.h
   src/ui/ctl_group.cpp
   src/ui/ctl_group.h
   src/ui/native_dialog.cpp

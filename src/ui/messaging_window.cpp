@@ -3,6 +3,8 @@
 #include "menu_bar.h"
 #include "sounds.h"
 #include "ate_toolbar.h"
+#include "buddy_info_window.h"
+#include "user_actions.h"
 #include "window_base.h"
 #include <QAbstractTextDocumentLayout>
 #include <QClipboard>
@@ -142,6 +144,7 @@ public:
   std::function<void(const QString &)> recipientChanged;
   std::function<void(MessageWindow *)> sendStarted;
   std::function<void(MessageWindow *)> sendFinished;
+  std::function<void(const QString &)> openMessage;
   QString recipient() const { return recipient_.text().trimmed(); }
   QString pendingRecipient() const { return pendingRecipient_; }
   bool isSending() const { return sending_; }
@@ -444,7 +447,11 @@ private:
     case 397: if (focus_ == 1 && !compose_.cursor.hasSelection()) return; editor().copy(false); return; // Copy
     case 398: editor().paste(focus_ == 0); edited(); return;              // Paste
     case 399: compose_.input(QLocale::system().toString(QTime::currentTime(), QLocale::ShortFormat), false); focus_ = 1; requestUpdate(); return; // Insert > Timestamp (F2)
-    default: return; // Warn, Block, Add Buddy, Talk, Get Info and the rendezvous items are not implemented yet
+    case Warn: case 668: userActions::warn(this, client_, recipient()); return;          // Warn button / People > Warn...
+    case Block: case 666: userActions::block(this, client_, recipient()); return;        // Block button / People > Block...
+    case AddBuddy: case 670: userActions::addBuddy(this, client_, recipient()); return;  // Add Buddy button / People > Add to Buddy List...
+    case GetInfo: case 669: BuddyInfoWindow::open(client_, recipient(), [this](int, const QString &name) { if (openMessage) openMessage(name); }); return; // Get Info button / People > Info...
+    default: return; // Talk (voice) and the rendezvous items are not implemented
     }
   }
   void rememberRecipient(const QString &name) {
@@ -523,11 +530,12 @@ struct MessagingWindows::State {
     window->recipientChanged = [this, window](const QString &name) { for (auto it = byRecipient.begin(); it != byRecipient.end();) { if (it.value() == window) it = byRecipient.erase(it); else ++it; } if (!name.isEmpty()) byRecipient.insert(normalizedName(name), window); };
     window->sendStarted = [this](MessageWindow *surface) { activeAttempt = surface; };
     window->sendFinished = [this](MessageWindow *surface) { if (activeAttempt == surface) activeAttempt.clear(); };
+    window->openMessage = [this](const QString &name) { open(name); };
     QObject::connect(window, &QObject::destroyed, owner, [this, window] { for (auto it = byRecipient.begin(); it != byRecipient.end();) { if (it.value().isNull() || it.value().data() == window) it = byRecipient.erase(it); else ++it; } windows.removeIf([window](const QPointer<MessageWindow> &value) { return value.isNull() || value.data() == window; }); if (activeAttempt.data() == window) activeAttempt.clear(); });
     window->showWindow(); return window;
   }
   void resetPending(const QString &reason = QString()) { for (const auto &window : windows) if (window) window->resetPending(reason); activeAttempt.clear(); }
-  void shutdown() { for (const auto &window : windows) if (window) { window->recipientChanged = {}; window->sendStarted = {}; window->sendFinished = {}; delete window.data(); } windows.clear(); byRecipient.clear(); activeAttempt.clear(); }
+  void shutdown() { for (const auto &window : windows) if (window) { window->recipientChanged = {}; window->sendStarted = {}; window->sendFinished = {}; window->openMessage = {}; delete window.data(); } windows.clear(); byRecipient.clear(); activeAttempt.clear(); }
 };
 
 MessagingWindows::MessagingWindows(OscarClient *client, QWindow *owner, QObject *parent) : QObject(parent), state_(std::make_unique<State>(this, client, owner)) {}

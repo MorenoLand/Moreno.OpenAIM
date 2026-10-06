@@ -4,6 +4,10 @@
 #include <QFile>
 #include <QJsonArray>
 #include <QJsonDocument>
+#include <QHash>
+#include <QIcon>
+#include <QImage>
+#include <QRegularExpression>
 #include <commctrl.h>
 #include <richedit.h>
 #include <vector>
@@ -42,8 +46,41 @@ void createNativeControls(HWND window, const QJsonObject &dialog, HFONT font) {
     if (!child) { qWarning() << "Original dialog control failed" << control.value("id") << name << GetLastError(); continue; }
     SendMessageW(child, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
     if (name == "RICHEDIT50W") SendMessageW(child, EM_SETEVENTMASK, 0, ENM_CHANGE);
+    // Icon / bitmap statics name an AimRes resource id in their text.
+    const DWORD type = style & SS_TYPEMASK; bool numeric = false; const int resource = control.value("text").toString().toInt(&numeric);
+    if (name == "STATIC" && numeric && type == SS_ICON) { static QHash<int, HICON> icons; if (!icons.contains(resource)) icons.insert(resource, QIcon(QStringLiteral(":/aim/icons/%1").arg(resource)).pixmap(32, 32).toImage().toHICON()); SendMessageW(child, STM_SETICON, reinterpret_cast<WPARAM>(icons.value(resource)), 0); }
+    if (name == "STATIC" && numeric && type == SS_BITMAP) { static QHash<int, HBITMAP> bitmaps; if (!bitmaps.contains(resource)) bitmaps.insert(resource, QImage(QStringLiteral(":/aim/art/%1").arg(resource)).toHBITMAP()); SendMessageW(child, STM_SETIMAGE, IMAGE_BITMAP, reinterpret_cast<LPARAM>(bitmaps.value(resource))); }
   }
 }
 
+namespace {
+struct DialogState { const std::function<void(HWND)> *init; const std::function<bool(HWND, int, int)> *command; QJsonObject dialog; HFONT font = nullptr; };
+INT_PTR CALLBACK originalDialogProc(HWND window, UINT message, WPARAM wParam, LPARAM lParam) {
+  auto *state = reinterpret_cast<DialogState *>(GetWindowLongPtrW(window, DWLP_USER));
+  if (message == WM_INITDIALOG) {
+    state = reinterpret_cast<DialogState *>(lParam); SetWindowLongPtrW(window, DWLP_USER, lParam);
+    LOGFONTW logical{}; HFONT dialogFont = reinterpret_cast<HFONT>(SendMessageW(window, WM_GETFONT, 0, 0)); if (dialogFont && GetObjectW(dialogFont, sizeof(logical), &logical)) state->font = CreateFontIndirectW(&logical);
+    createNativeControls(window, state->dialog, state->font);
+    SendMessageW(window, WM_SETICON, ICON_SMALL, reinterpret_cast<LPARAM>(LoadIconW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(1))));
+    if (*state->init) (*state->init)(window);
+    return TRUE;
+  }
+  if (message == WM_COMMAND && state) { if (*state->command && (*state->command)(window, LOWORD(wParam), HIWORD(wParam))) return TRUE; if (LOWORD(wParam) == IDCANCEL) { EndDialog(window, IDCANCEL); return TRUE; } }
+  if (message == WM_CLOSE) { EndDialog(window, IDCANCEL); return TRUE; }
+  return FALSE;
+}
+}
+INT_PTR runOriginalDialog(HWND owner, int id, const std::function<void(HWND)> &init, const std::function<bool(HWND, int, int)> &command) {
+  DialogState state{&init, &command, originalDialog(id)}; if (state.dialog.isEmpty()) return -1;
+  const QByteArray bytes = nativeDialogTemplate(state.dialog, true);
+  const INT_PTR result = DialogBoxIndirectParamW(GetModuleHandleW(nullptr), reinterpret_cast<LPCDLGTEMPLATE>(bytes.constData()), owner, originalDialogProc, reinterpret_cast<LPARAM>(&state));
+  if (state.font) DeleteObject(state.font);
+  return result;
+}
+QString formatAimString(QString text, const QStringList &arguments) {
+  static const QRegularExpression specifier(QStringLiteral("%(?:0\\.\\d+)?l?[sdu]"));
+  for (const QString &argument : arguments) { const QRegularExpressionMatch match = specifier.match(text); if (!match.hasMatch()) break; text.replace(match.capturedStart(), match.capturedLength(), argument); }
+  return text.replace(QStringLiteral("%%"), QStringLiteral("%"));
+}
 QString nativeWindowText(HWND window) { int length = GetWindowTextLengthW(window); std::vector<wchar_t> text(size_t(length) + 1); GetWindowTextW(window, text.data(), length + 1); return QString::fromWCharArray(text.data()); }
 #endif

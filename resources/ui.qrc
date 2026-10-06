@@ -57,10 +57,16 @@
     <file alias="160">art/160.bmp</file>
     <file alias="161">art/161.bmp</file>
     <file alias="162">art/162.bmp</file>
+    <file alias="163">art/163.bmp</file>
+    <file alias="164">art/164.bmp</file>
+    <file alias="165">art/165.bmp</file>
     <file alias="169">art/169.bmp</file>
     <file alias="170">art/170.bmp</file>
     <file alias="173">art/173.bmp</file>
     <file alias="174">art/174.bmp</file>
+    <file alias="175">art/175.bmp</file>
+    <file alias="176">art/176.bmp</file>
+    <file alias="177">art/177.bmp</file>
     <file alias="179">art/179.bmp</file>
     <file alias="180">art/180.bmp</file>
     <file alias="183">art/183.bmp</file>
@@ -381,6 +387,8 @@
     <file alias="101">icons/101.ico</file>
     <file alias="108">icons/108.ico</file>
     <file alias="110">icons/110.ico</file>
+    <file alias="111">icons/111.ico</file>
+    <file alias="128">icons/128.ico</file>
   </qresource>
   <qresource prefix="/aim/menus">
     <file alias="100">menus/100.bin</file>

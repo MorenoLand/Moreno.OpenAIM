@@ -17,4 +17,9 @@ QString nativeControlClass(const QJsonValue &value);
 // Creates every control of the original template inside an initialised dialog window.
 void createNativeControls(HWND window, const QJsonObject &dialog, HFONT font);
 QString nativeWindowText(HWND window);
+// Runs an original dialog modally: controls are created from the template, `init` fills them, `command` handles
+// WM_COMMAND (return true when handled; call EndDialog from it to finish). Returns the EndDialog result.
+#include <functional>
+INT_PTR runOriginalDialog(HWND owner, int id, const std::function<void(HWND)> &init, const std::function<bool(HWND, int, int)> &command);
+QString formatAimString(QString text, const QStringList &arguments); // fills %s / %d / %ld / %0.200s in order
 #endif
