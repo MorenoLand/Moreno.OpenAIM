@@ -241,10 +241,13 @@ protected:
   }
 private:
   static QSize defaultCanvas() {
-    // VALUERES 109/110: 380x240 outer window, also the minimum track size (0x1138cda0, 0x1138d7ef).
+    // VALUERES 109/110 = 380 x 240 (0x1138cda0, 0x1138d7ef). The reference screenshot of a new IM window is 380 px
+    // wide outside but 300 px tall: the 240 is the height below the caption and menu bar (inferred from that capture).
     QSize outer(380, 240);
 #ifdef Q_OS_WIN
     RECT frame{0, 0, 0, 0}; AdjustWindowRectEx(&frame, WS_OVERLAPPEDWINDOW, FALSE, 0);
+    RECT withMenu{0, 0, 0, 0}; AdjustWindowRectEx(&withMenu, WS_OVERLAPPEDWINDOW, TRUE, 0);
+    outer.rheight() += (withMenu.bottom - withMenu.top);
     const QSize client(outer.width() - (frame.right - frame.left), outer.height() - (frame.bottom - frame.top));
     return client + QSize(2, TitleBarHeight + 3);
 #else

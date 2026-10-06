@@ -37,8 +37,8 @@ void warn(QWindow *owner, OscarClient *client, const QString &screenName) {
   bool anonymous = false;
   const INT_PTR result = runOriginalDialog(ownerHandle(owner), 142,
     [&](HWND dialog) { SetDlgItemTextW(dialog, 384, reinterpret_cast<LPCWSTR>(formatAimString(aimString(536), {name, name, name}).utf16())); },
-    [&](HWND dialog, int id, int) { if (id == IDOK) { anonymous = IsDlgButtonChecked(dialog, 383) == BST_CHECKED; EndDialog(dialog, anonymous ? 2 : 1); return true; } return false; });
-  if (result != 1 && result != 2) return;
+    [&](HWND dialog, int id, int) { if (id == IDOK) { anonymous = IsDlgButtonChecked(dialog, 383) == BST_CHECKED; EndDialog(dialog, IDOK); return true; } return false; });
+  if (result != IDOK) return; // Cancel (id 2 = IDCANCEL) or closing the dialog sends nothing
   // Report the outcome once (icbmui 0x11383332 / 0x113833e6).
   auto done = std::make_shared<QList<QMetaObject::Connection>>(); QPointer<QWindow> guard(owner);
   auto finish = [done] { for (const auto &connection : *done) QObject::disconnect(connection); };
@@ -51,7 +51,7 @@ void warn(QWindow *owner, OscarClient *client, const QString &screenName) {
     const bool notAllowed = reason.contains(QStringLiteral("0x000d"), Qt::CaseInsensitive);
     infoBox(guard, notAllowed ? formatAimString(aimString(527), {name}) : formatAimString(aimString(528), {name, QString()}));
   }));
-  client->warnUser(name, result == 2);
+  client->warnUser(name, anonymous);
 #else
   Q_UNUSED(owner); Q_UNUSED(client); Q_UNUSED(screenName);
 #endif
