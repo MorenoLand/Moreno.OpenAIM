@@ -5,6 +5,7 @@
 #include "ate_toolbar.h"
 #include "buddy_info_window.h"
 #include "user_actions.h"
+#include "text_editor.h"
 #include "window_base.h"
 #include <QAbstractTextDocumentLayout>
 #include <QClipboard>
@@ -51,43 +52,6 @@ QFont controlFont() { return CtlEnvironment::font(106); }
 QPalette atePalette() { QPalette palette; palette.setColor(QPalette::Text, Qt::black); palette.setColor(QPalette::WindowText, Qt::black); palette.setColor(QPalette::Base, Qt::white); palette.setColor(QPalette::Link, QColor(0, 0, 255)); return palette; }
 QString normalizedName(QString name) { name.remove(QLatin1Char(' ')); return name.toCaseFolded(); }
 bool isHtml(const QString &text) { return text.contains(QRegularExpression(QStringLiteral("</?[A-Za-z!][^>]*>"))); }
-
-class TextEditor {
-public:
-  explicit TextEditor(const QFont &font) : cursor(&document) { document.setDefaultFont(font); document.setDocumentMargin(0); document.setUndoRedoEnabled(true); }
-  QString text() const { return document.toPlainText(); }
-  void setText(const QString &value) { document.setPlainText(value); cursor = QTextCursor(&document); cursor.movePosition(QTextCursor::End); }
-  void clear() { setText(QString()); }
-  bool handleKey(QKeyEvent *event, bool singleLine, bool *submit) {
-    const Qt::KeyboardModifiers modifiers = event->modifiers(); const bool command = modifiers.testFlag(Qt::ControlModifier) || modifiers.testFlag(Qt::MetaModifier);
-    const QTextCursor::MoveMode mode = modifiers.testFlag(Qt::ShiftModifier) ? QTextCursor::KeepAnchor : QTextCursor::MoveAnchor;
-    if (command && event->key() == Qt::Key_A) { cursor.select(QTextCursor::Document); return true; }
-    if (command && (event->key() == Qt::Key_C || event->key() == Qt::Key_X)) { copy(event->key() == Qt::Key_X); return true; }
-    if (command && event->key() == Qt::Key_V) { paste(singleLine); return true; }
-    switch (event->key()) {
-    case Qt::Key_Backspace: cursor.deletePreviousChar(); return true;
-    case Qt::Key_Delete: cursor.deleteChar(); return true;
-    case Qt::Key_Left: cursor.movePosition(QTextCursor::PreviousCharacter, mode); return true;
-    case Qt::Key_Right: cursor.movePosition(QTextCursor::NextCharacter, mode); return true;
-    case Qt::Key_Up: if (!singleLine) cursor.movePosition(QTextCursor::Up, mode); return true;
-    case Qt::Key_Down: if (!singleLine) cursor.movePosition(QTextCursor::Down, mode); return true;
-    case Qt::Key_Home: cursor.movePosition(QTextCursor::StartOfLine, mode); return true;
-    case Qt::Key_End: cursor.movePosition(QTextCursor::EndOfLine, mode); return true;
-    case Qt::Key_Return: case Qt::Key_Enter:
-      if (!singleLine && (modifiers.testFlag(Qt::ShiftModifier) || modifiers.testFlag(Qt::ControlModifier))) cursor.insertText(QStringLiteral("\n")); else if (submit) *submit = true;
-      return true;
-    default: break;
-    }
-    if (!event->text().isEmpty() && !command && !modifiers.testFlag(Qt::AltModifier) && event->text().at(0).isPrint()) { input(event->text(), singleLine); return true; }
-    return false;
-  }
-  void copy(bool cut) { if (!cursor.hasSelection()) return; QGuiApplication::clipboard()->setText(cursor.selectedText().replace(QChar::ParagraphSeparator, QLatin1Char('\n'))); if (cut) cursor.removeSelectedText(); }
-  void paste(bool singleLine) { input(QGuiApplication::clipboard()->text(), singleLine); }
-  void input(const QString &value, bool singleLine) { QString text = value; if (singleLine) text.replace(QRegularExpression(QStringLiteral("[\\r\\n]+")), QStringLiteral(" ")); cursor.insertText(text); }
-  QTextDocument document;
-  QTextCursor cursor;
-  qreal scroll = 0;
-};
 
 // History pane: AppendMsg header "<b>Name</b>:" in red (self) or blue (buddy), "<br>" before every later message.
 class Transcript {
@@ -145,6 +109,7 @@ public:
   std::function<void(MessageWindow *)> sendStarted;
   std::function<void(MessageWindow *)> sendFinished;
   std::function<void(const QString &)> openMessage;
+  std::function<void(const QString &)> inviteToChat;
   QString recipient() const { return recipient_.text().trimmed(); }
   QString pendingRecipient() const { return pendingRecipient_; }
   bool isSending() const { return sending_; }
@@ -454,6 +419,7 @@ private:
     case Block: case 666: userActions::block(this, client_, recipient()); return;        // Block button / People > Block...
     case AddBuddy: case 670: userActions::addBuddy(this, client_, recipient()); return;  // Add Buddy button / People > Add to Buddy List...
     case GetInfo: case 669: BuddyInfoWindow::open(client_, recipient(), [this](int, const QString &name) { if (openMessage) openMessage(name); }); return; // Get Info button / People > Info...
+    case 665: if (inviteToChat) inviteToChat(recipient()); return;                       // People > Send Chat Invitation... / &Chat
     default: return; // Talk (voice) and the rendezvous items are not implemented
     }
   }
@@ -517,6 +483,7 @@ struct MessagingWindows::State {
   QHash<QString, QPointer<MessageWindow>> byRecipient;
   QList<QPointer<MessageWindow>> windows;
   QPointer<MessageWindow> activeAttempt;
+  std::function<void(const QString &)> chatHandler;
   State(MessagingWindows *ownerValue, OscarClient *clientValue, QWindow *parentValue) : owner(ownerValue), client(clientValue), transientParent(parentValue) {
     if (!client) return;
     QObject::connect(client, &OscarClient::messageReceived, owner, [this](const QString &sender, const QString &text) { const bool existing = byRecipient.value(normalizedName(sender)) != nullptr; playAimSound(existing ? AimSound::ImReceive : AimSound::ImFirstReceive); MessageWindow *window = open(sender); window->appendIncoming(sender, text); window->showWindow(); });
@@ -534,6 +501,7 @@ struct MessagingWindows::State {
     window->sendStarted = [this](MessageWindow *surface) { activeAttempt = surface; };
     window->sendFinished = [this](MessageWindow *surface) { if (activeAttempt == surface) activeAttempt.clear(); };
     window->openMessage = [this](const QString &name) { open(name); };
+    window->inviteToChat = [this](const QString &name) { if (chatHandler) chatHandler(name); };
     QObject::connect(window, &QObject::destroyed, owner, [this, window] { for (auto it = byRecipient.begin(); it != byRecipient.end();) { if (it.value().isNull() || it.value().data() == window) it = byRecipient.erase(it); else ++it; } windows.removeIf([window](const QPointer<MessageWindow> &value) { return value.isNull() || value.data() == window; }); if (activeAttempt.data() == window) activeAttempt.clear(); });
     window->showWindow(); return window;
   }
@@ -544,4 +512,5 @@ struct MessagingWindows::State {
 MessagingWindows::MessagingWindows(OscarClient *client, QWindow *owner, QObject *parent) : QObject(parent), state_(std::make_unique<State>(this, client, owner)) {}
 MessagingWindows::~MessagingWindows() { if (state_) state_->shutdown(); }
 void MessagingWindows::openMessage(const QString &recipient) { if (state_) state_->open(recipient); }
+void MessagingWindows::setChatHandler(std::function<void(const QString &)> handler) { if (state_) state_->chatHandler = std::move(handler); }
 void MessagingWindows::previewConversation() { if (state_) state_->open(QStringLiteral("edward"))->preview(); }

@@ -58,6 +58,11 @@ set(AIM_SOURCES
   src/ui/user_actions.h
   src/ui/buddy_info_window.cpp
   src/ui/buddy_info_window.h
+  src/ui/text_editor.h
+  src/ui/ctl_window.cpp
+  src/ui/ctl_window.h
+  src/ui/chat_windows.cpp
+  src/ui/chat_windows.h
   src/ui/ctl_group.cpp
   src/ui/ctl_group.h
   src/ui/native_dialog.cpp

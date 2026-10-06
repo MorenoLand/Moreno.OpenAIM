@@ -388,6 +388,7 @@
     <file alias="108">icons/108.ico</file>
     <file alias="110">icons/110.ico</file>
     <file alias="111">icons/111.ico</file>
+    <file alias="119">icons/119.ico</file>
     <file alias="128">icons/128.ico</file>
   </qresource>
   <qresource prefix="/aim/menus">
