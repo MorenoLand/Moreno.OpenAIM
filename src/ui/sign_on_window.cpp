@@ -1,6 +1,9 @@
 #include "sign_on_window.h"
 #include "buddy_list_window.h"
 #include "preferences_window.h"
+#include "art.h"
+#include "ctl_group.h"
+#include "gdi_text.h"
 #include <QFontMetrics>
 #include <QGuiApplication>
 #include <QKeyEvent>
@@ -45,6 +48,8 @@ void forgetSavedPassword(QSettings &settings, const QString &screenName) { if (!
 SignOnWindow::SignOnWindow(OscarClient *client) : WindowBase(QStringLiteral("Sign On"), QSize(212, 378)), client_(client), logo_(QStringLiteral(":/aim/signon.gif")), helpIcon_(transparentBitmap(QStringLiteral(":/aim/signon-help.bmp"),0x00ccccccu)), setupIcon_(transparentBitmap(QStringLiteral(":/aim/setup-wrench.bmp"))), signOnIcon_(transparentBitmap(QStringLiteral(":/aim/signon-button.bmp"))) {
   screenName_ = settings_.value(QStringLiteral("account/screenName")).toString();
   screenNameLabel_ = transparentBitmap(QStringLiteral(":/aim/screen-name.bmp"));
+  form_ = loadCtlGroup(111); connecting_ = loadCtlGroup(119); // osclogin.ocm: full form / connecting state
+  setCanvasSize(formCanvas(false));
   const int buttonIds[3][3]={{128,131,134},{127,130,133},{126,129,132}};
   for(int button=0;button<3;++button)for(int state=0;state<3;++state)buttonStates_[button][state]=transparentBitmap(QStringLiteral(":/aim/button-%1.bmp").arg(buttonIds[button][state]));
   host_ = settings_.value(QStringLiteral("connection/host"),QStringLiteral("login.oscar.aol.com")).toString();
@@ -75,25 +80,63 @@ SignOnWindow::~SignOnWindow() {
 #ifdef Q_OS_WIN
   QGuiApplication::instance()->removeNativeEventFilter(this);
   for(void *control : {nativeName_,nativePassword_,nativeSave_,nativeAuto_,nativeCancel_}) if(control&&IsWindow(static_cast<HWND>(control))) DestroyWindow(static_cast<HWND>(control));
-  if (nativeFont_) DeleteObject(static_cast<HFONT>(nativeFont_));
+  for (void *font : {nativeFont_, nativeFontEdit_, nativeFontCombo_}) if (font) DeleteObject(static_cast<HFONT>(font));
 #endif
 }
 bool SignOnWindow::event(QEvent *event) {
   if (event->type() == QEvent::Expose && isExposed()) initializeNativeControls();
   return WindowBase::event(event);
 }
+QList<CtlObject *> SignOnWindow::formObjects(bool connecting) {
+  QList<CtlObject *> objects; CtlObject *root = (connecting ? connecting_ : form_).get(); if (!root) return objects;
+#ifdef Q_OS_WIN
+  const QRect client(1, TitleBarHeight, width(), height());
+#else
+  const QRect client(0, TitleBarHeight, width(), height() - TitleBarHeight);
+#endif
+  ctlMove(*root, client, aimEnvironment());
+  std::function<void(CtlObject &)> collect = [&](CtlObject &o) { objects.append(&o); for (const auto &child : o.children) collect(*child); };
+  collect(*root); return objects;
+}
+QRect SignOnWindow::formRect(quint32 id, bool connecting, int occurrence) {
+  for (CtlObject *o : formObjects(connecting)) if (o->id == id && o->kind != CtlObject::Kind::Group && occurrence-- == 0) return o->windowRect();
+  return {};
+}
+QSize SignOnWindow::formCanvas(bool connecting) const {
+  // osclogin sizes the window from CtlGroupGetIdealSize of CTLGROUP 111 (119 while connecting). On the reference
+  // screenshot the client area is 10x19 px larger than that ideal size (inferred offset; its source is not traced).
+  const auto &group = connecting ? connecting_ : form_;
+  const QSize ideal = group ? ctlIdealSize(*group, aimEnvironment()) : QSize(200, 324);
+  return ideal + QSize(10, 19) + QSize(2, TitleBarHeight + 3);
+}
+int SignOnWindow::actionAt(const QPoint &point) {
+  if (loginStage_) return 0;
+  if (formRect(962).contains(point)) return 1;   // Help
+  if (formRect(963).contains(point)) return 2;   // Setup
+  if (formRect(964).contains(point)) return 3;   // Sign On
+  if (formRect(1052).contains(point)) return 4;  // Forgot Password?
+  return 0;
+}
 void SignOnWindow::initializeNativeControls() {
 #ifdef Q_OS_WIN
   if (nativeName_) return;
   HWND owner = reinterpret_cast<HWND>(winId());
   SetWindowLongPtrW(owner, GWL_STYLE, GetWindowLongPtrW(owner, GWL_STYLE) | WS_CLIPCHILDREN);
+  // Fonts of the CTLGROUP 111 records: FONTDESC 108 (password, check boxes) and 112 (screen-name combo), Arial -11.
+  auto fontFor = [](quint32 id) { const GdiFont f = GdiFont::fromFontDesc(id); LOGFONTW logical{}; logical.lfHeight = f.height; logical.lfWeight = f.weight; logical.lfCharSet = DEFAULT_CHARSET; wcsncpy_s(logical.lfFaceName, f.face.toStdWString().c_str(), _TRUNCATE); return CreateFontIndirectW(&logical); };
+  nativeFontEdit_ = fontFor(108); nativeFontCombo_ = fontFor(112);
   HDC dc = GetDC(owner); nativeFont_ = CreateFontW(-MulDiv(8, GetDeviceCaps(dc, LOGPIXELSY), 72),0,0,0,FW_NORMAL,FALSE,FALSE,FALSE,DEFAULT_CHARSET,0,0,0,0,L"MS Sans Serif"); ReleaseDC(owner,dc);
-  nativeName_ = CreateWindowExW(0,L"COMBOBOX",L"",WS_CHILD|WS_VISIBLE|WS_TABSTOP|WS_VSCROLL|CBS_DROPDOWN|CBS_AUTOHSCROLL,14,211-TitleBarHeight,177,120,owner,reinterpret_cast<HMENU>(195),GetModuleHandleW(nullptr),nullptr);
-  nativePassword_ = CreateWindowExW(WS_EX_CLIENTEDGE,L"EDIT",L"",WS_CHILD|WS_VISIBLE|WS_TABSTOP|ES_PASSWORD|ES_AUTOHSCROLL,14,254-TitleBarHeight,177,22,owner,reinterpret_cast<HMENU>(197),GetModuleHandleW(nullptr),nullptr);
-  nativeSave_ = CreateWindowExW(0,L"BUTTON",L"Save password",WS_CHILD|WS_VISIBLE|WS_TABSTOP|BS_AUTOCHECKBOX,14,283-TitleBarHeight,116,14,owner,reinterpret_cast<HMENU>(198),GetModuleHandleW(nullptr),nullptr);
-  nativeAuto_ = CreateWindowExW(0,L"BUTTON",L"Auto-login",WS_CHILD|WS_VISIBLE|WS_TABSTOP|BS_AUTOCHECKBOX,133,283-TitleBarHeight,76,14,owner,reinterpret_cast<HMENU>(199),GetModuleHandleW(nullptr),nullptr);
-  nativeCancel_=CreateWindowExW(0,L"BUTTON",L"Cancel",WS_CHILD|WS_TABSTOP|BS_PUSHBUTTON,77,241-TitleBarHeight,55,21,owner,reinterpret_cast<HMENU>(193),GetModuleHandleW(nullptr),nullptr);if(nativeCancel_)SendMessageW(static_cast<HWND>(nativeCancel_),WM_SETFONT,reinterpret_cast<WPARAM>(nativeFont_),TRUE);
-  for (void *control : {nativeName_,nativePassword_,nativeSave_,nativeAuto_}) if(control) SendMessageW(static_cast<HWND>(control),WM_SETFONT,reinterpret_cast<WPARAM>(nativeFont_),TRUE);
+  auto windowRect = [this](const QRect &canvas) { return canvas.translated(-1, -TitleBarHeight); };
+  const QRect name = windowRect(formRect(958)), password = windowRect(formRect(959)), save = windowRect(formRect(960)), autoLogin = windowRect(formRect(961)), cancel = windowRect(formRect(193, true));
+  nativeName_ = CreateWindowExW(0,L"COMBOBOX",L"",WS_CHILD|WS_VISIBLE|WS_TABSTOP|WS_VSCROLL|CBS_DROPDOWN|CBS_AUTOHSCROLL,name.x(),name.y(),name.width(),120,owner,reinterpret_cast<HMENU>(195),GetModuleHandleW(nullptr),nullptr);
+  nativePassword_ = CreateWindowExW(WS_EX_CLIENTEDGE,L"EDIT",L"",WS_CHILD|WS_VISIBLE|WS_TABSTOP|ES_PASSWORD|ES_AUTOHSCROLL,password.x(),password.y(),password.width(),password.height(),owner,reinterpret_cast<HMENU>(197),GetModuleHandleW(nullptr),nullptr);
+  // The original edit is not visual-styled (classic sunken client edge, reference screenshot).
+  using SetTheme = HRESULT(WINAPI *)(HWND, LPCWSTR, LPCWSTR); static HMODULE uxtheme = LoadLibraryW(L"uxtheme.dll"); if (auto setTheme = uxtheme ? reinterpret_cast<SetTheme>(GetProcAddress(uxtheme, "SetWindowTheme")) : nullptr) setTheme(static_cast<HWND>(nativePassword_), L"", L"");
+  nativeSave_ = CreateWindowExW(0,L"BUTTON",reinterpret_cast<LPCWSTR>(aimEnvironment().string(874).utf16()),WS_CHILD|WS_VISIBLE|WS_TABSTOP|BS_AUTOCHECKBOX,save.x(),save.y(),save.width(),save.height(),owner,reinterpret_cast<HMENU>(198),GetModuleHandleW(nullptr),nullptr);
+  nativeAuto_ = CreateWindowExW(0,L"BUTTON",reinterpret_cast<LPCWSTR>(aimEnvironment().string(875).utf16()),WS_CHILD|WS_VISIBLE|WS_TABSTOP|BS_AUTOCHECKBOX,autoLogin.x(),autoLogin.y(),autoLogin.width(),autoLogin.height(),owner,reinterpret_cast<HMENU>(199),GetModuleHandleW(nullptr),nullptr);
+  nativeCancel_=CreateWindowExW(0,L"BUTTON",reinterpret_cast<LPCWSTR>(aimEnvironment().string(279).utf16()),WS_CHILD|WS_TABSTOP|BS_PUSHBUTTON,cancel.x(),cancel.y(),cancel.width(),cancel.height(),owner,reinterpret_cast<HMENU>(193),GetModuleHandleW(nullptr),nullptr);if(nativeCancel_)SendMessageW(static_cast<HWND>(nativeCancel_),WM_SETFONT,reinterpret_cast<WPARAM>(nativeFontCombo_),TRUE);
+  SendMessageW(static_cast<HWND>(nativeName_),WM_SETFONT,reinterpret_cast<WPARAM>(nativeFontCombo_),TRUE);
+  for (void *control : {nativePassword_,nativeSave_,nativeAuto_}) if(control) SendMessageW(static_cast<HWND>(control),WM_SETFONT,reinterpret_cast<WPARAM>(nativeFontEdit_),TRUE);
   SetWindowTextW(static_cast<HWND>(nativeName_),reinterpret_cast<LPCWSTR>(screenName_.utf16()));
   SetWindowTextW(static_cast<HWND>(nativePassword_),reinterpret_cast<LPCWSTR>(password_.utf16()));
   SendMessageW(static_cast<HWND>(nativeSave_),BM_SETCHECK,savePassword_?BST_CHECKED:BST_UNCHECKED,0);
@@ -128,74 +171,81 @@ bool SignOnWindow::nativeEventFilter(const QByteArray &, void *message, qintptr 
   return false;
 }
 void SignOnWindow::paintContent(QPainter &p) {
-  p.fillRect(QRect(1, TitleBarHeight, canvasWidth() - 2, canvasHeight() - TitleBarHeight - 1), QColor(240, 240, 240));
-  if (!logo_.isNull()) p.drawImage(QPoint(10, 28), logo_);
-  p.setPen(QColor(160,160,160));p.drawLine(5,188,207,188);p.setPen(Qt::white);p.drawLine(5,189,207,189);
-  if(loginStage_){QFont font(QStringLiteral("Arial"));font.setPixelSize(11);p.setFont(font);p.setPen(Qt::black);p.drawText(QRect(5,195,202,18),Qt::AlignCenter,screenName_);const QString phases[]={QString(),QStringLiteral("1. Connecting..."),QStringLiteral("2. Verifying name and password..."),QStringLiteral("3. Starting services...")};p.drawText(QRect(5,215,202,18),Qt::AlignCenter,phases[loginStage_]);
+  p.fillRect(QRect(1, TitleBarHeight, canvasWidth() - 2, canvasHeight() - TitleBarHeight - 1), art::Face);
+  const bool connecting = loginStage_ != 0;
+  int staticIndex = 0;
+  for (CtlObject *o : formObjects(connecting)) {
+    if (!o->shown()) continue;
+    const QRect r = o->windowRect();
+    switch (o->kind) {
+    case CtlObject::Kind::Ate: if (o->id == 957 && !logo_.isNull()) p.drawImage(QPoint(r.center().x() - logo_.width() / 2 + 1, r.top() + (r.height() - logo_.height()) / 2), logo_); break; // GIFDATA 103
+    case CtlObject::Kind::Separator: art::drawEtchedLine(p, r); break;
+    case CtlObject::Kind::ArtButton: {
+      const int action = o->id == 962 ? 1 : o->id == 963 ? 2 : o->id == 964 ? 3 : 0;
+      const int state = pressedAction_ == action && hoveredAction_ == action ? 2 : hoveredAction_ == action ? 1 : 0;
+      p.drawImage(r.topLeft() + QPoint(1, 1), art::image(o->art[state] ? o->art[state] : o->art[0]));
+      break;
+    }
+    case CtlObject::Kind::Static: {
+      const GdiFont font = GdiFont::fromFontDesc(o->fontId);
+      if (connecting) {
+        // Progress statics: 1019 shows the screen name, 192 the sign-on phase (STRING 226-228).
+        const QString text = o->id == 1019 ? screenName_ : aimEnvironment().string(quint32(225 + (loginStage_ == 1 ? 1 : loginStage_ == 2 ? 2 : 3)));
+        drawGdiText(p, r, text, font, Qt::black, art::Face, GdiSingleLine | GdiCenter | GdiVCenter | GdiNoPrefix | GdiEndEllipsis);
+      } else if (o->id == 0 && staticIndex++ == 0) {
+        p.drawImage(QPoint(r.left(), r.top() + (r.height() - screenNameLabel_.height()) / 2), screenNameLabel_); // art 252 "ScreenName" with key
+      } else if (o->id == 0) drawGdiText(p, r, aimEnvironment().string(o->textId), font, Qt::black, art::Face, GdiSingleLine | GdiVCenter | GdiNoPrefix);
+      else if (o->id == 965) drawGdiText(p, r, QStringLiteral("%1 %2").arg(aimEnvironment().string(o->textId), QStringLiteral("4.7.2480")), font, Qt::black, art::Face, GdiSingleLine | GdiCenter | GdiVCenter | GdiNoPrefix);
+      else if (o->id == 1052) { GdiFont link = font; link.underline = true; drawGdiText(p, r, aimEnvironment().string(o->textId), link, QColor(0, 0, 255), art::Face, GdiSingleLine | GdiCenter | GdiVCenter | GdiNoPrefix); }
+      break;
+    }
+    default: break;
+    }
+  }
 #ifndef Q_OS_WIN
-    p.setPen(QColor(130,130,130));p.setBrush(QColor(250,250,250));p.drawRect(QRect(78,241,55,21));p.drawText(QRect(78,241,55,21),Qt::AlignCenter,QStringLiteral("Cancel"));
+  if (!connecting) { drawField(p, formRect(958), screenName_, false, nameActive_); drawField(p, formRect(959), password_, true, !nameActive_); drawCheckbox(p, QRect(formRect(960).topLeft() + QPoint(0, 4), QSize(13, 13)), savePassword_); drawCheckbox(p, QRect(formRect(961).topLeft() + QPoint(0, 4), QSize(13, 13)), autoLogin_); }
+  else { const QRect cancel = formRect(193, true); p.setPen(QColor(130,130,130)); p.setBrush(QColor(250,250,250)); p.drawRect(cancel); p.drawText(cancel, Qt::AlignCenter, aimEnvironment().string(279)); }
 #endif
-    return;}
-  QFont text(QStringLiteral("MS Sans Serif"), 8);
-  p.drawImage(QPoint(15, 198), screenNameLabel_);
-#ifndef Q_OS_WIN
-  drawField(p, QRect(15, 211, 177, 22), screenName_, false, nameActive_);
-#endif
-  p.setPen(QColor(20, 20, 20)); p.setFont(text); p.drawText(QRect(15, 237, 177, 15), Qt::AlignLeft | Qt::AlignVCenter, QStringLiteral("Password"));
-#ifndef Q_OS_WIN
-  drawField(p, QRect(15, 254, 177, 22), password_, true, !nameActive_);
-  drawCheckbox(p, QRect(15, 283, 13, 13), savePassword_);
-  drawText(p, QPoint(33, 294), QStringLiteral("Save password"), QColor(20, 20, 20), text);
-  drawCheckbox(p, QRect(134, 283, 13, 13), autoLogin_);
-  drawText(p, QPoint(151, 294), QStringLiteral("Auto-login"), QColor(20, 20, 20), text);
-#endif
-  const QPoint buttonPositions[]={QPoint(9,303),QPoint(43,303),QPoint(146,302)};
-  for(int button=0;button<3;++button){int state=pressedAction_==button+1&&hoveredAction_==button+1?2:hoveredAction_==button+1?1:0;p.drawImage(buttonPositions[button],buttonStates_[button][state]);}
-  drawText(p, QPoint(68, 352), QStringLiteral("Version: 4.7.2480"), QColor(20, 20, 20), QFont(QStringLiteral("MS Sans Serif"), 7));
-  QFont forgotFont(QStringLiteral("MS Sans Serif"), 8); forgotFont.setUnderline(true);
-  drawText(p, QPoint(60, 373), QStringLiteral("Forgot Password?"), QColor(0, 0, 238), forgotFont);
-  if (!status_.isEmpty()) {
-    p.fillRect(QRect(10, 182, 192, 17), QColor(242, 242, 242));
-    drawText(p, QPoint(12, 194), status_.left(36), QColor(145, 0, 0), QFont(QStringLiteral("MS Sans Serif"), 7));
+  if (!status_.isEmpty() && !connecting) {
+    const QRect separator = [&] { for (CtlObject *o : formObjects(false)) if (o->kind == CtlObject::Kind::Separator) return o->windowRect(); return QRect(); }();
+    drawGdiText(p, QRect(5, separator.top() - 8, canvasWidth() - 10, 13), status_, GdiFont::fromFontDesc(112), QColor(145, 0, 0), art::Face, GdiSingleLine | GdiCenter | GdiVCenter | GdiNoPrefix | GdiEndEllipsis);
   }
 }
-void SignOnWindow::contentMouseMove(const QPoint &point) { int action=QRect(7,302,36,42).contains(point)?1:QRect(41,302,41,42).contains(point)?2:QRect(144,302,45,42).contains(point)?3:QRect(55,359,109,18).contains(point)?4:0; if(action!=hoveredAction_){hoveredAction_=action;setCursor(action==4?Qt::PointingHandCursor:Qt::ArrowCursor);renderNow();} }
+void SignOnWindow::contentMouseMove(const QPoint &point) { const int action = actionAt(point); if (action != hoveredAction_) { hoveredAction_ = action; setCursor(action == 4 ? Qt::PointingHandCursor : Qt::ArrowCursor); renderNow(); } }
 void SignOnWindow::contentLeave() { if(hoveredAction_){hoveredAction_=0;unsetCursor();renderNow();} }
 void SignOnWindow::drawField(QPainter &p, const QRect &r, const QString &value, bool password, bool active) {
   p.fillRect(r, Qt::white);
   p.setPen(active ? QColor(0, 85, 190) : QColor(95, 95, 95)); p.drawLine(r.left(), r.top(), r.right(), r.top()); p.drawLine(r.left(), r.top(), r.left(), r.bottom());
   p.setPen(QColor(255, 255, 255)); p.drawLine(r.left(), r.bottom(), r.right(), r.bottom()); p.drawLine(r.right(), r.top(), r.right(), r.bottom());
   const QString shown = password ? QString(value.size(), QChar(0x25cf)) : value;
-  const QFont font(QStringLiteral("MS Sans Serif"), 8);
-  drawText(p, QPoint(r.left() + 3, r.top() + 15), shown, QColor(15, 15, 15), font);
-  if (!password) {
-    p.setPen(QColor(105, 105, 105));
-    const QPoint center(r.right() - 9, r.center().y());
-    p.drawLine(center.x() - 4, center.y() - 2, center.x(), center.y() + 2);
-    p.drawLine(center.x(), center.y() + 2, center.x() + 4, center.y() - 2);
-  }
-  if (active && caretVisible_) { const int x = r.left() + 3 + QFontMetrics(font).horizontalAdvance(shown); p.setPen(QColor(15, 15, 15)); p.drawLine(x, r.top() + 4, x, r.bottom() - 4); }
+  drawGdiText(p, r.adjusted(3, 1, -18, -1), shown, GdiFont::fromFontDesc(108), QColor(15, 15, 15), Qt::white, GdiSingleLine | GdiVCenter | GdiNoPrefix);
+  if (active && caretVisible_) { const int x = r.left() + 3 + gdiTextSize(GdiFont::fromFontDesc(108), shown, GdiSingleLine | GdiNoPrefix).width(); p.setPen(QColor(15, 15, 15)); p.drawLine(x, r.top() + 4, x, r.bottom() - 4); }
 }
 void SignOnWindow::contentMousePress(const QPoint &point, Qt::MouseButton button) {
   if (button != Qt::LeftButton) return;
-  if(loginStage_){if(QRect(78,241,55,21).contains(point))cancelSignOn();return;}
-  if(QRect(7,302,36,42).contains(point)||QRect(41,302,41,42).contains(point)||QRect(144,302,48,42).contains(point)){pressedAction_=QRect(7,302,36,42).contains(point)?1:QRect(41,302,41,42).contains(point)?2:3;hoveredAction_=pressedAction_;renderNow();return;}
-  if (QRect(15, 211, 177, 22).contains(point)) nameActive_ = true;
-  else if (QRect(15, 254, 177, 22).contains(point)) nameActive_ = false;
-  else if (QRect(15, 283, 13, 13).contains(point)) savePassword_ = !savePassword_;
-  else if (QRect(134, 283, 13, 13).contains(point)) autoLogin_ = !autoLogin_;
-  else if (QRect(41, 302, 41, 42).contains(point)) { showPreferences(); return; }
-  else if (QRect(144, 302, 45, 42).contains(point)) { signOn(); return; }
-  else if (QRect(7, 302, 36, 42).contains(point)) status_ = QStringLiteral("AIM Help is unavailable");
-  else if (QRect(55, 359, 109, 18).contains(point)) status_ = QStringLiteral("Password recovery is unavailable");
+  if (loginStage_) { if (formRect(193, true).contains(point)) cancelSignOn(); return; }
+  if (const int action = actionAt(point); action >= 1 && action <= 3) { pressedAction_ = hoveredAction_ = action; renderNow(); return; }
+  if (actionAt(point) == 4) { status_ = QStringLiteral("Password recovery is unavailable"); renderNow(); return; }
+#ifndef Q_OS_WIN
+  if (formRect(958).contains(point)) nameActive_ = true;
+  else if (formRect(959).contains(point)) nameActive_ = false;
+  else if (formRect(960).contains(point)) savePassword_ = !savePassword_;
+  else if (formRect(961).contains(point)) autoLogin_ = !autoLogin_;
   else return;
   settings_.setValue(QStringLiteral("account/screenName"), screenName_);
   settings_.setValue(QStringLiteral("account/savePassword"), savePassword_);
   settings_.setValue(QStringLiteral("account/autoLogin"), autoLogin_);
   renderNow();
+#endif
 }
-void SignOnWindow::contentMouseRelease(const QPoint &point,Qt::MouseButton button){if(button!=Qt::LeftButton||!pressedAction_)return;int action=pressedAction_;pressedAction_=0;renderNow();if(action==1&&QRect(7,302,36,42).contains(point)){status_=QStringLiteral("AIM Help is unavailable");renderNow();}else if(action==2&&QRect(41,302,41,42).contains(point))showPreferences();else if(action==3&&QRect(144,302,48,42).contains(point))signOn();}
-void SignOnWindow::contentKeyPress(QKeyEvent *event) {
+void SignOnWindow::contentMouseRelease(const QPoint &point, Qt::MouseButton button) {
+  if (button != Qt::LeftButton || !pressedAction_) return;
+  const int action = pressedAction_; pressedAction_ = 0; renderNow();
+  if (actionAt(point) != action) return;
+  if (action == 1) { status_ = QStringLiteral("AIM Help is unavailable"); renderNow(); }
+  else if (action == 2) showPreferences();
+  else if (action == 3) signOn();
+}void SignOnWindow::contentKeyPress(QKeyEvent *event) {
   if(loginStage_){if(event->key()==Qt::Key_Escape)cancelSignOn();return;}
   if (event->key() == Qt::Key_Escape) { closeRequested(); return; }
   if (event->key() == Qt::Key_Return || event->key() == Qt::Key_Enter) { signOn(); return; }
@@ -222,9 +272,9 @@ void SignOnWindow::signOn() {
   renderNow();
   client_->signOn(host_, port_, screenName_, password_);
 }
-void SignOnWindow::setLoginStage(int stage) { if(stage<0||stage>3||loginStage_==stage)return;loginStage_=stage;hoveredAction_=0;pressedAction_=0;setCanvasSize(QSize(212,stage?269:378));
+void SignOnWindow::setLoginStage(int stage) { if(stage<0||stage>3||loginStage_==stage)return;loginStage_=stage;hoveredAction_=0;pressedAction_=0;setCanvasSize(formCanvas(stage!=0));
 #ifdef Q_OS_WIN
-  for(void *control:{nativeName_,nativePassword_,nativeSave_,nativeAuto_})if(control)ShowWindow(static_cast<HWND>(control),stage?SW_HIDE:SW_SHOW);if(nativeCancel_){ShowWindow(static_cast<HWND>(nativeCancel_),stage?SW_SHOW:SW_HIDE);if(stage)SetFocus(static_cast<HWND>(nativeCancel_));}if(!stage&&nativeName_)SetFocus(static_cast<HWND>(nativeName_));
+  for(void *control:{nativeName_,nativePassword_,nativeSave_,nativeAuto_})if(control)ShowWindow(static_cast<HWND>(control),stage?SW_HIDE:SW_SHOW);if(nativeCancel_){const QRect cancel=formRect(193,true).translated(-1,-TitleBarHeight);SetWindowPos(static_cast<HWND>(nativeCancel_),nullptr,cancel.x(),cancel.y(),cancel.width(),cancel.height(),SWP_NOZORDER|SWP_NOACTIVATE);ShowWindow(static_cast<HWND>(nativeCancel_),stage?SW_SHOW:SW_HIDE);if(stage)SetFocus(static_cast<HWND>(nativeCancel_));}if(!stage&&nativeName_)SetFocus(static_cast<HWND>(nativeName_));
 #endif
   renderNow(); }
 void SignOnWindow::cancelSignOn() { client_->signOff();setLoginStage(0);status_.clear();renderNow(); }

@@ -6,9 +6,11 @@
 #include <QSettings>
 #include <QTimer>
 #include <QAbstractNativeEventFilter>
+#include <memory>
 
 class BuddyListWindow;
 class PreferencesWindow;
+struct CtlObject;
 
 class SignOnWindow final : public WindowBase, public QAbstractNativeEventFilter {
   Q_OBJECT
@@ -39,6 +41,14 @@ private:
   void cancelSignOn();
   void drawField(QPainter &painter, const QRect &rect, const QString &text, bool password, bool active);
   void drawCheckbox(QPainter &painter, const QRect &rect, bool checked);
+  // CTLGROUP 111 (sign-on form) / 119 (connecting state) laid out in the client area; objects in record order.
+  QList<CtlObject *> formObjects(bool connecting);
+  QRect formRect(quint32 id, bool connecting = false, int occurrence = 0);
+  QSize formCanvas(bool connecting) const;
+  int actionAt(const QPoint &point);
+  std::shared_ptr<CtlObject> form_, connecting_;
+  void *nativeFontEdit_ = nullptr;
+  void *nativeFontCombo_ = nullptr;
   OscarClient *client_ = nullptr;
   QSettings settings_;
   QImage logo_;
