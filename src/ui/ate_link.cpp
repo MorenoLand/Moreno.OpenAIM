@@ -5,11 +5,19 @@
 #include "preferences.h"
 #include <QTextImageFormat>
 #include <QDesktopServices>
+#include <QDir>
+#include <QFile>
+#include <QImage>
+#include <QRegularExpression>
 #include <QTextBlock>
 #include <QTextCursor>
 #include <QTextDocument>
 #include <QUrl>
 #include <QWindow>
+#include <iterator>
+#ifdef Q_OS_WIN
+#include <commdlg.h>
+#endif
 
 namespace {
 constexpr int HtmlSizeProperty = QTextFormat::UserProperty + 1; // HTML font size 1..7 of a run (IM compose pane)
@@ -39,7 +47,7 @@ QTextCharFormat plainFormat(const QTextCharFormat &from) {
 }
 
 namespace ate {
-QString html(const QTextDocument &document, const QColor &background) {
+QString html(const QTextDocument &document, const QColor &background, QList<QByteArray> *images) {
   QString body;
   for (QTextBlock block = document.begin(); block.isValid(); block = block.next()) {
     if (block != document.begin()) body += QStringLiteral("<BR>");
@@ -47,6 +55,16 @@ QString html(const QTextDocument &document, const QColor &background) {
     for (auto it = block.begin(); !it.atEnd(); ++it) {
       const QTextFragment fragment = it.fragment(); if (!fragment.isValid()) continue;
       const QTextCharFormat f = fragment.charFormat();
+      if (f.isImageFormat() && images) {
+        // <IMG SRC="%s%s" ID="%d" WIDTH="%d" HEIGHT="%d" DATASIZE="%ld"> (ate32 0x12027870); the data follows the HTML.
+        const QTextImageFormat image = f.toImageFormat(); QString path = QUrl(image.name()).isLocalFile() ? QUrl(image.name()).toLocalFile() : image.name();
+        QFile file(path); const QByteArray bytes = file.open(QIODevice::ReadOnly) ? file.readAll() : QByteArray();
+        const QImage picture = QImage::fromData(bytes); images->append(bytes);
+        QString src = QDir::toNativeSeparators(path); if (src.size() > 1 && src.at(1) == QLatin1Char(':')) src.prepend(QStringLiteral("file:///"));
+        body += QStringLiteral("<IMG SRC=\"%1\" ID=\"%2\" WIDTH=\"%3\" HEIGHT=\"%4\" DATASIZE=\"%5\">").arg(src).arg(images->size()).arg(picture.width()).arg(picture.height()).arg(bytes.size());
+        continue;
+      }
+      if (f.isImageFormat()) continue;
       if (inLink && (!f.isAnchor() || f.anchorHref() != openHref)) { body += QStringLiteral("</A>"); inLink = false; }
       if (f.isAnchor() && !inLink) { openHref = f.anchorHref(); body += QStringLiteral("<A HREF=\"%1\">").arg(openHref); inLink = true; } // the URL is not escaped (quotes are refused by the dialog)
       QString open, close; QStringList font;
@@ -76,6 +94,71 @@ void insertSmileys(QTextDocument &document, int from) {
       QTextImageFormat image; image.setName(url.toString()); image.setVerticalAlignment(QTextCharFormat::AlignMiddle); found.insertImage(image);
     }
   }
+}
+QByteArray directPayload(const QTextDocument &document, const QColor &background, quint16 *encoding) {
+  QList<QByteArray> images; const QString text = html(document, background, &images);
+  bool latin = true, ascii = true; QString escaped;
+  for (const QChar c : text) { if (c.unicode() > 0xFF) { escaped += QStringLiteral("&#%1;").arg(c.unicode()); continue; } if (c.unicode() > 0x7F) ascii = false; escaped += c; }
+  Q_UNUSED(latin); *encoding = ascii ? 0 : 3;
+  QByteArray out = escaped.toLatin1();
+  if (!images.isEmpty()) {
+    out += "<BINARY>";
+    for (int i = 0; i < images.size(); ++i) out += QStringLiteral("<DATA ID=\"%1\" SIZE=\"%2\">").arg(i + 1).arg(images[i].size()).toLatin1() + images[i] + "</DATA>";
+    out += "</BINARY>";
+  }
+  return out;
+}
+QString directHtml(const QByteArray &payload, quint16 encoding, QTextDocument &target) {
+  static int serial = 0;
+  int binary = payload.indexOf("<BINARY>"); if (binary < 0) binary = payload.size();
+  const QByteArray textBytes = payload.left(binary);
+  QString text;
+  if (encoding == 2) { for (int i = 0; i + 1 < textBytes.size(); i += 2) text.append(QChar(ushort((quint8(textBytes[i]) << 8) | quint8(textBytes[i + 1])))); }
+  else text = QString::fromLatin1(textBytes);
+  // <DATA ID="n" SIZE="m">raw</DATA> sections become document resources.
+  QHash<QString, QString> sources;
+  static const QRegularExpression dataTag(QStringLiteral("<DATA ID=\"?(\\d+)\"? SIZE=\"?(\\d+)\"?>"), QRegularExpression::CaseInsensitiveOption);
+  int at = binary;
+  while (at < payload.size()) {
+    const int open = payload.indexOf("<DATA", at); if (open < 0) break;
+    const int close = payload.indexOf('>', open); if (close < 0) break;
+    const auto match = dataTag.match(QString::fromLatin1(payload.mid(open, close - open + 1))); if (!match.hasMatch()) { at = close + 1; continue; }
+    const qsizetype size = match.captured(2).toLongLong(); const QByteArray bytes = payload.mid(close + 1, int(size));
+    const QString url = QStringLiteral("aim-image:%1").arg(++serial);
+    target.addResource(QTextDocument::ImageResource, QUrl(url), QImage::fromData(bytes));
+    sources.insert(match.captured(1), url);
+    at = close + 1 + int(size);
+  }
+  static const QRegularExpression imgTag(QStringLiteral("<IMG\\b[^>]*>"), QRegularExpression::CaseInsensitiveOption), idAttr(QStringLiteral("\\bID=\"?(\\d+)\"?"), QRegularExpression::CaseInsensitiveOption);
+  QString result; int last = 0;
+  for (auto it = imgTag.globalMatch(text); it.hasNext();) {
+    const auto m = it.next(); result += text.mid(last, m.capturedStart() - last); last = m.capturedEnd();
+    const auto id = idAttr.match(m.captured()); const QString url = id.hasMatch() ? sources.value(id.captured(1)) : QString();
+    if (!url.isEmpty()) result += QStringLiteral("<img src=\"%1\">").arg(url);
+  }
+  return result + text.mid(last);
+}
+bool hasImages(const QTextDocument &document) {
+  for (QTextBlock block = document.begin(); block.isValid(); block = block.next()) for (auto it = block.begin(); !it.atEnd(); ++it) if (it.fragment().isValid() && it.fragment().charFormat().isImageFormat()) return true;
+  return false;
+}
+bool insertPicture(QWindow *owner, QTextCursor &cursor) {
+#ifdef Q_OS_WIN
+  // GetOpenFileName with STRING 386 title and STRING 385 filter ('|' separated), flags 0x1800 (ate32 0x12013f9f).
+  QString filter = aimString(385); filter.replace(QLatin1Char('|'), QChar(0)); const QString title = aimString(386);
+  wchar_t path[MAX_PATH * 4]{};
+  OPENFILENAMEW chooser{}; chooser.lStructSize = sizeof(chooser); chooser.hwndOwner = owner && owner->handle() ? reinterpret_cast<HWND>(owner->winId()) : nullptr;
+  chooser.lpstrFilter = reinterpret_cast<LPCWSTR>(filter.utf16()); chooser.lpstrFile = path; chooser.nMaxFile = DWORD(std::size(path)); chooser.lpstrTitle = reinterpret_cast<LPCWSTR>(title.utf16()); chooser.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST;
+  if (!GetOpenFileNameW(&chooser)) return false;
+  const QString file = QString::fromWCharArray(path); const QImage image(file);
+  if (image.isNull()) return false; // sound files are not supported yet
+  const QUrl url = QUrl::fromLocalFile(file);
+  cursor.document()->addResource(QTextDocument::ImageResource, url, image);
+  QTextImageFormat format; format.setName(url.toString()); format.setWidth(image.width()); format.setHeight(image.height());
+  cursor.insertImage(format); return true;
+#else
+  Q_UNUSED(owner); Q_UNUSED(cursor); return false;
+#endif
 }
 void openUrl(const QString &url) {
   QString target = url.trimmed(); if (target.isEmpty()) return;

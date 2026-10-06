@@ -21,6 +21,7 @@ public:
   QString screenName() const;
   bool connected() const;
   bool sendMessage(const QString &recipient, const QString &text);
+  bool sendRendezvous(const QString &recipient, const aim::oscar::Rendezvous &rendezvous); // ICBM channel 2
   bool sendAutoResponse(const QString &recipient, const QString &text); // away/idle reply, flagged with TLV 4
   void setIdle(quint32 seconds);                                          // SNAC(01,11); 0 = no longer idle
   QString awayText() const { return awayText_; }
@@ -65,6 +66,7 @@ signals:
   void chatRoomReady(const aim::oscar::ChatRoom &room);
   void chatParticipantsChanged(const QString &cookie, const QVector<aim::oscar::UserInfo> &participants);
   void chatMessageReceived(const QString &cookie, const QString &sender, const QString &text);
+  void rendezvousReceived(const aim::oscar::Rendezvous &rendezvous); // channel 2 other than chat invitations
   void chatInvitationReceived(const aim::oscar::ChatInvitation &invitation);
   void chatRoomClosed(const QString &cookie, const QString &reason);
   void rosterEditFinished(bool success);

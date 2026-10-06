@@ -21,5 +21,7 @@ QString nativeWindowText(HWND window);
 // WM_COMMAND (return true when handled; call EndDialog from it to finish). Returns the EndDialog result.
 #include <functional>
 INT_PTR runOriginalDialog(HWND owner, int id, const std::function<void(HWND)> &init, const std::function<bool(HWND, int, int)> &command);
+// Modeless variant: returns the dialog window; the dialog is destroyed by DestroyWindow (Cancel/close do it by default).
+HWND createOriginalDialog(HWND owner, int id, std::function<void(HWND)> init, std::function<bool(HWND, int, int)> command);
 QString formatAimString(QString text, const QStringList &arguments); // fills %s / %d / %ld / %0.200s in order
 #endif

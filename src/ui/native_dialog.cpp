@@ -70,6 +70,32 @@ INT_PTR CALLBACK originalDialogProc(HWND window, UINT message, WPARAM wParam, LP
   return FALSE;
 }
 }
+namespace {
+struct ModelessState { std::function<void(HWND)> init; std::function<bool(HWND, int, int)> command; QJsonObject dialog; HFONT font = nullptr; };
+INT_PTR CALLBACK modelessDialogProc(HWND window, UINT message, WPARAM wParam, LPARAM lParam) {
+  auto *state = reinterpret_cast<ModelessState *>(GetWindowLongPtrW(window, DWLP_USER));
+  if (message == WM_INITDIALOG) {
+    state = reinterpret_cast<ModelessState *>(lParam); SetWindowLongPtrW(window, DWLP_USER, lParam);
+    LOGFONTW logical{}; HFONT dialogFont = reinterpret_cast<HFONT>(SendMessageW(window, WM_GETFONT, 0, 0)); if (dialogFont && GetObjectW(dialogFont, sizeof(logical), &logical)) state->font = CreateFontIndirectW(&logical);
+    createNativeControls(window, state->dialog, state->font);
+    SendMessageW(window, WM_SETICON, ICON_SMALL, reinterpret_cast<LPARAM>(LoadIconW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(1))));
+    if (state->init) state->init(window);
+    return TRUE;
+  }
+  if (!state) return FALSE;
+  if (message == WM_COMMAND) { if (state->command && state->command(window, LOWORD(wParam), HIWORD(wParam))) return TRUE; if (LOWORD(wParam) == IDCANCEL) { DestroyWindow(window); return TRUE; } }
+  if (message == WM_CLOSE) { if (!state->command || !state->command(window, IDCANCEL, BN_CLICKED)) DestroyWindow(window); return TRUE; }
+  if (message == WM_NCDESTROY) { if (state->font) DeleteObject(state->font); SetWindowLongPtrW(window, DWLP_USER, 0); delete state; }
+  return FALSE;
+}
+}
+HWND createOriginalDialog(HWND owner, int id, std::function<void(HWND)> init, std::function<bool(HWND, int, int)> command) {
+  auto *state = new ModelessState{std::move(init), std::move(command), originalDialog(id)}; if (state->dialog.isEmpty()) { delete state; return nullptr; }
+  const QByteArray bytes = nativeDialogTemplate(state->dialog, true);
+  HWND window = CreateDialogIndirectParamW(GetModuleHandleW(nullptr), reinterpret_cast<LPCDLGTEMPLATE>(bytes.constData()), owner, modelessDialogProc, reinterpret_cast<LPARAM>(state));
+  if (!window) { delete state; return nullptr; }
+  ShowWindow(window, SW_SHOW); return window;
+}
 INT_PTR runOriginalDialog(HWND owner, int id, const std::function<void(HWND)> &init, const std::function<bool(HWND, int, int)> &command) {
   DialogState state{&init, &command, originalDialog(id)}; if (state.dialog.isEmpty()) return -1;
   const QByteArray bytes = nativeDialogTemplate(state.dialog, true);

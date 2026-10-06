@@ -2,6 +2,7 @@
 // to a real server and exercises messaging, user info, chat and buddy list flows.
 // Credentials are read at runtime from a "screenname<TAB>password" file and never printed.
 #include "client.h"
+#include "direct_connection.h"
 #include <QCoreApplication>
 #include <QElapsedTimer>
 #include <QFile>
@@ -12,6 +13,8 @@
 using aim::oscar::ChatInvitation;
 using aim::oscar::ChatRoom;
 using aim::oscar::UserInfo;
+using aim::oscar::Rendezvous;
+using aim::oscar::capDirectIm;
 
 namespace {
 constexpr int kTimeoutMs = 20000;
@@ -258,6 +261,39 @@ void scenarioBuddies(Recorder &a, Recorder &b) {
         "before=" + before + " after=" + rosterSignature(a.client));
 }
 
+// IM Image: propose over ICBM channel 2 through the server, the acceptor connects to port 4443, ODC2 frames both ways.
+void scenarioDirectIm(Recorder &a, Recorder &b) {
+  QVector<Rendezvous> received; QObject::connect(&b.client, &OscarClient::rendezvousReceived, &b.client, [&](const Rendezvous &rv) { received.append(rv); });
+  const quint64 cookie = 0x1122334455667788ULL;
+  DirectConnection listener(cookie, a.name); if (!listener.listen()) { fail("direct im listen", "port 4443 unavailable"); return; }
+  Rendezvous rv; rv.type = 0; rv.cookie = cookie; rv.capability = capDirectIm(); QByteArray port(2, 0); port[0] = char(0x14); port[1] = char(0x46);
+  QByteArray ip(4, 0); ip[0] = char(127); ip[3] = char(1); rv.values = {{0x03, ip}, {0x05, port}};
+  check("direct im propose sent", a.client.sendRendezvous(b.name, rv), a.lastOpFailure());
+  if (!waitFor([&] { return !received.isEmpty(); })) { fail("direct im propose relayed", "no rendezvous received: " + b.lastOpFailure()); return; }
+  const Rendezvous got = received.first();
+  check("direct im propose contents", got.type == 0 && got.cookie == cookie && got.capability == capDirectIm() && same(got.sender, a.name), "type/cookie/capability mismatch");
+  bool hasVerified = false; for (const auto &tlv : got.values) hasVerified = hasVerified || tlv.tag == 4;
+  check("direct im server added verified IP", hasVerified, "no TLV 4");
+  DirectConnection acceptor(cookie, b.name);
+  bool aConnected = false, bConnected = false; QByteArray aGot, bGot; quint8 typing = 0;
+  QObject::connect(&listener, &DirectConnection::connected, &listener, [&] { aConnected = true; });
+  QObject::connect(&acceptor, &DirectConnection::connected, &acceptor, [&] { bConnected = true; });
+  QObject::connect(&listener, &DirectConnection::messageReceived, &listener, [&](const QByteArray &p, quint16, quint8) { aGot = p; });
+  QObject::connect(&acceptor, &DirectConnection::messageReceived, &acceptor, [&](const QByteArray &p, quint16, quint8) { bGot = p; });
+  QObject::connect(&acceptor, &DirectConnection::typingChanged, &acceptor, [&](quint8 f) { typing = f; });
+  acceptor.connectTo({QHostAddress(QHostAddress::LocalHost)}); // both ends run on this machine
+  check("direct im connected", waitFor([&] { return aConnected && bConnected; }, 10000), "ODC2 connection not established");
+  QByteArray image("GIF89a\x01\x00\x01\x00\x80\x00\x00\x00\x00\x00\xff\xff\xff,\x00\x00\x00\x00\x01\x00\x01\x00\x00\x02\x02D\x01\x00;", 35);
+  const QByteArray payload = QByteArray("<HTML><BODY>pic <IMG SRC=\"x.gif\" ID=\"1\" WIDTH=\"1\" HEIGHT=\"1\" DATASIZE=\"35\"></BODY></HTML><BINARY><DATA ID=\"1\" SIZE=\"35\">") + image + "</DATA></BINARY>";
+  listener.sendTyping(0x0E);
+  check("direct im typing frame", waitFor([&] { return typing == 0x0E; }, 5000), QStringLiteral("flags %1").arg(typing));
+  listener.sendMessage(payload, 0);
+  check("direct im frame a->b (image intact)", waitFor([&] { return bGot == payload; }, 5000), QStringLiteral("got %1 bytes").arg(bGot.size()));
+  acceptor.sendMessage(QByteArrayLiteral("<HTML><BODY>back</BODY></HTML>"), 0);
+  check("direct im frame b->a", waitFor([&] { return aGot.contains("back"); }, 5000), "no frame");
+  listener.close(); acceptor.close();
+}
+
 void scenarioSignOff(Recorder &a, Recorder &b) {
   a.client.signOff();
   b.client.signOff();
@@ -292,6 +328,7 @@ int main(int argc, char **argv) {
     scenarioWarn(a, b);
     scenarioChat(a, b);
     scenarioBuddies(a, b);
+    scenarioDirectIm(a, b);
   }
   scenarioSignOff(a, b);
   out << "SUMMARY failures=" << failures << Qt::endl;

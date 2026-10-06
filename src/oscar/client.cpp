@@ -32,6 +32,7 @@ bool splitHostPort(const QString &address, QString *host, quint16 *port) {
   *port = quint16(value);
   return !host->isEmpty();
 }
+QByteArray valueOf2(const QVector<aim::oscar::Tlv> &values){for(const auto &value:values)if(value.tag==5)return value.value;return {};}
 quint32 rosterKey(const aim::oscar::FeedbagItem &item){return (quint32(item.groupId)<<16)|item.itemId;}
 bool sameRosterItem(const aim::oscar::FeedbagItem &a,const aim::oscar::FeedbagItem &b){return aim::oscar::encodeFeedbagItems({a})==aim::oscar::encodeFeedbagItems({b});}
 quint16 freeRosterId(const QVector<aim::oscar::FeedbagItem> &items,bool group){QSet<quint16> ids;for(const auto &item:items)ids.insert(group?item.groupId:item.itemId);for(quint32 id=1;id<=65535;++id)if(!ids.contains(quint16(id)))return quint16(id);return 0;}
@@ -42,7 +43,7 @@ void setOrder(aim::oscar::FeedbagItem &group,const QVector<quint16> &members){QV
 
 OscarClient::OscarClient(QObject *parent) : QObject(parent) {
   rosterTimeout_.setSingleShot(true);rosterTimeout_.setInterval(30000);connect(&rosterTimeout_,&QTimer::timeout,this,[this]{if(rosterRefreshing_){pending_.remove(rosterRefreshRequest_);emit operationFailed(QStringLiteral("Refresh Buddy List"),QStringLiteral("Server did not return the authoritative Buddy List"));cancelRosterEdit();}else if(rosterEditing_){emit operationFailed(QStringLiteral("Save Buddy List"),QStringLiteral("Server did not acknowledge the roster change"));finishRosterCluster(false);}});
-  qRegisterMetaType<aim::oscar::UserInfo>();qRegisterMetaType<aim::oscar::ChatRoom>();qRegisterMetaType<aim::oscar::ChatInvitation>();qRegisterMetaType<QVector<aim::oscar::UserInfo>>();
+  qRegisterMetaType<aim::oscar::UserInfo>();qRegisterMetaType<aim::oscar::ChatRoom>();qRegisterMetaType<aim::oscar::ChatInvitation>();qRegisterMetaType<aim::oscar::Rendezvous>();qRegisterMetaType<QVector<aim::oscar::UserInfo>>();
   connect(&socket_, &QTcpSocket::connected, this, &OscarClient::onConnected);
   connect(&socket_, &QTcpSocket::readyRead, this, &OscarClient::onReadyRead);
   connect(&socket_, &QTcpSocket::errorOccurred, this, &OscarClient::onSocketError);
@@ -179,7 +180,7 @@ void OscarClient::handleSnac(const aim::oscar::Snac &snac) {
       if (phase_ == Phase::Failed) return;
       sendBuddyRequests();
       if (phase_ == Phase::Failed) return;
-      sendSnac(0x02,0x04,aim::oscar::encodeTlv(5,QByteArray::fromHex("748f2420628711d18222444553540000")));
+      sendSnac(0x02,0x04,aim::oscar::encodeTlv(5,aim::oscar::capChat()+aim::oscar::capDirectIm())); // Chat, IM Image
       if (phase_ == Phase::Failed) return;
       sendSnac(0x04,0x04);
       if (phase_ == Phase::Failed) return;
@@ -259,6 +260,7 @@ void OscarClient::fail(const QString &reason) {
   emit failed(reason);
 }
 quint32 OscarClient::request(quint16 family,quint16 subgroup,const QByteArray &body,const QString &operation,const aim::oscar::ChatRoom &room){quint32 id=requestId_;pending_.insert(id,Pending{operation,family,room});sendSnac(family,subgroup,body);return id;}
+bool OscarClient::sendRendezvous(const QString &recipient,const aim::oscar::Rendezvous &rendezvous){const QString operation=QStringLiteral("Rendezvous with %1").arg(recipient);if(!connected()){emit operationFailed(operation,QStringLiteral("Not signed on"));return false;}QByteArray body=aim::oscar::encodeRendezvous(recipient,rendezvous);if(body.isEmpty()){emit operationFailed(operation,QStringLiteral("Invalid rendezvous"));return false;}request(4,6,body,operation);return connected();}
 bool OscarClient::sendAutoResponse(const QString &recipient,const QString &text){if(!connected()||text.isEmpty())return false;QByteArray body=aim::oscar::encodeInstantMessage(recipient,text,QRandomGenerator::global()->generate64(),true);if(body.isEmpty())return false;sendSnac(4,6,body);return connected();}
 void OscarClient::setIdle(quint32 seconds){if(!connected())return;QByteArray body;append32(body,seconds);sendSnac(1,0x11,body);}
 bool OscarClient::sendMessage(const QString &recipient,const QString &text){QString operation=QStringLiteral("IM to %1").arg(recipient);if(!connected()){emit operationFailed(operation,QStringLiteral("Not signed on"));return false;}quint64 cookie=QRandomGenerator::global()->generate64();QByteArray body=aim::oscar::encodeInstantMessage(recipient,text,cookie);qsizetype textBytes=text.size();for(QChar c:text)if(c.unicode()>127){textBytes=text.size()*2;break;}if(body.isEmpty()||(maxMessageLength_&&textBytes>maxMessageLength_)){emit operationFailed(operation,body.isEmpty()?QStringLiteral("Invalid recipient or message size"):QStringLiteral("Message exceeds the server limit of %1 bytes").arg(maxMessageLength_));return false;}request(4,6,body,operation);return connected();}
@@ -297,7 +299,7 @@ bool OscarClient::handleMessaging(const aim::oscar::Snac &snac){
   if(snac.family==2&&snac.subgroup==6){aim::oscar::UserInfo info;Pending pending=pending_.take(snac.requestId);if(!aim::oscar::decodeUserInfoReply(snac.body,&info,&error))emit operationFailed(pending.operation.isEmpty()?QStringLiteral("Get Info"):pending.operation,error);else if(pending.operation==QStringLiteral("Set Away")||pending.operation==QStringLiteral("Clear Away")){bool actual=(info.flags&0x20)!=0;if(away_!=actual){away_=actual;emit awayChanged(actual);}if(actual!=(pending.operation==QStringLiteral("Set Away")))emit operationFailed(pending.operation,QStringLiteral("Server away state did not match the request"));}else emit userInfoReceived(info);return true;}
   if(snac.family==4&&snac.subgroup==5){if(snac.body.size()!=16){emit operationFailed(QStringLiteral("Message parameters"),QStringLiteral("Malformed ICBM parameters"));return true;}maxMessageLength_=read16(snac.body,6);QByteArray body;append16(body,0);body.append(snac.body.mid(2));sendSnac(4,2,body);return true;}
   if(snac.family==4&&snac.subgroup==0x0c){pending_.remove(snac.requestId);if(snac.body.size()<11){emit operationFailed(QStringLiteral("Message confirmation"),QStringLiteral("Malformed ICBM acknowledgment"));return true;}quint8 length=quint8(snac.body[10]);if(snac.body.size()!=11+length){emit operationFailed(QStringLiteral("Message confirmation"),QStringLiteral("Malformed ICBM acknowledgment recipient"));return true;}if(read16(snac.body,8)==1)emit messageAccepted(QString::fromUtf8(snac.body.mid(11,length)),read64(snac.body,0));return true;}
-  if(snac.family==4&&snac.subgroup==7){aim::oscar::InstantMessage message;if(!aim::oscar::decodeInstantMessage(snac.body,&message,&error)){emit operationFailed(QStringLiteral("Receive message"),error);return true;}if(message.channel==1)emit messageReceived(message.sender.screenName,message.text,std::any_of(message.attributes.cbegin(),message.attributes.cend(),[](const auto &tlv){return tlv.tag==4;}));else if(message.channel==2){aim::oscar::ChatInvitation invitation;quint16 type=0;if(aim::oscar::decodeChatInvitation(message,&invitation,&type,&error)){if(type==0)emit chatInvitationReceived(invitation);else if(type==1)emit operationFailed(QStringLiteral("Chat invitation"),QStringLiteral("%1 declined the chat invitation").arg(invitation.sender));}else if(!error.isEmpty())emit operationFailed(QStringLiteral("Receive chat invitation"),error);}return true;}
+  if(snac.family==4&&snac.subgroup==7){aim::oscar::InstantMessage message;if(!aim::oscar::decodeInstantMessage(snac.body,&message,&error)){emit operationFailed(QStringLiteral("Receive message"),error);return true;}if(message.channel==1)emit messageReceived(message.sender.screenName,message.text,std::any_of(message.attributes.cbegin(),message.attributes.cend(),[](const auto &tlv){return tlv.tag==4;}));else if(message.channel==2&&valueOf2(message.attributes).mid(10,16)!=aim::oscar::capChat()){aim::oscar::Rendezvous rendezvous;if(aim::oscar::decodeRendezvous(message,&rendezvous,&error))emit rendezvousReceived(rendezvous);else emit operationFailed(QStringLiteral("Receive rendezvous"),error);}else if(message.channel==2){aim::oscar::ChatInvitation invitation;quint16 type=0;if(aim::oscar::decodeChatInvitation(message,&invitation,&type,&error)){if(type==0)emit chatInvitationReceived(invitation);else if(type==1)emit operationFailed(QStringLiteral("Chat invitation"),QStringLiteral("%1 declined the chat invitation").arg(invitation.sender));}else if(!error.isEmpty())emit operationFailed(QStringLiteral("Receive chat invitation"),error);}return true;}
   return false;
 }
 bool OscarClient::rosterEditPending()const{return rosterEditing_;}

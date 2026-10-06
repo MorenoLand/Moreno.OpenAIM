@@ -1,6 +1,10 @@
 #include "messaging_window.h"
 #include "ate_link.h"
 #include "preferences.h"
+#include "../oscar/direct_connection.h"
+#include <QNetworkInterface>
+#include <QRandomGenerator>
+#include <QtEndian>
 #include "native_dialog.h"
 #include "ate_toolbar.h"
 #include <QUrl>
@@ -108,6 +112,8 @@ public:
       : WindowBase(QStringLiteral("Instant Message"), defaultCanvas()), client_(client), recipient_(QFont(QStringLiteral("MS Sans Serif"), 8)), compose_(prefs::composeFont()), menu_(101), group_(loadCtlGroup(103)) {
     QObject::setParent(owner); Q_UNUSED(transientParent);
     compose_.cursor.setCharFormat(prefs::composeFormat()); // Preferences > IM/Chat > Defaults for Composing Windows
+    typingTimer_.setSingleShot(true); typingTimer_.setInterval(5000);
+    QObject::connect(&typingTimer_, &QTimer::timeout, owner, [this] { if (directConnected() && lastTyping_ == 0x0E) { direct_->sendTyping(0x06); lastTyping_ = 0x06; } });
     setResizable(defaultCanvas());
     recipient_.setText(recipient);
     setMode(recipient.trimmed().isEmpty() ? NewMessage : WithRecipient);
@@ -121,6 +127,16 @@ public:
   std::function<void(MessageWindow *)> sendFinished;
   std::function<void(const QString &)> openMessage;
   std::function<void(const QString &)> inviteToChat;
+  std::function<void(MessageWindow *)> connectImage; // People > Connect to Send IM Image (818) / toolbar cell
+  std::function<void(MessageWindow *)> closeImage;   // People > Close IM Image Connection (819)
+  void setDirect(DirectConnection *connection) {
+    direct_ = connection; toolbar_.setImageConnected(directConnected()); peerTyping_ = 0; lastTyping_ = 0; updateTitle(); requestUpdate();
+  }
+  bool directConnected() const { return direct_ && direct_->isConnected(); }
+  void appendDirect(const QString &sender, const QByteArray &payload, quint16 encoding, quint8 flags) {
+    appendIncoming(sender, ate::directHtml(payload, encoding, transcript_.document), flags & DirectConnection::AutoResponse);
+  }
+  void setPeerTyping(quint8 flags) { peerTyping_ = flags; requestUpdate(); }
   QString recipient() const { return recipient_.text().trimmed(); }
   QString pendingRecipient() const { return pendingRecipient_; }
   bool isSending() const { return sending_; }
@@ -154,6 +170,11 @@ protected:
     layout();
     p.fillRect(client(), Face);
     menu_.paint(p, menuRects_, hoveredMenu_, openMenu_);
+    if (directConnected() && !menuRects_.isEmpty()) { // typing state of the buddy, right of the menu bar (0x1138e76a): STRING 1100/1099/1098/1101
+      const quint32 id = (peerTyping_ & DirectConnection::Recording) ? 1100 : (peerTyping_ & DirectConnection::Typing) ? 1099 : (peerTyping_ & DirectConnection::Typed) ? 1098 : 1101;
+      const QRect last = menuRects_.last(); const QRect area(last.right() + 8, last.top(), canvasWidth() - last.right() - 16, last.height());
+      if (area.width() > 20) { p.setPen(QColor(64, 64, 64)); p.setFont(QFont(QStringLiteral("MS Sans Serif"), 8)); p.drawText(area, Qt::AlignRight | Qt::AlignVCenter, QFontMetrics(p.font()).elidedText(aimString(id), Qt::ElideRight, area.width())); }
+    }
     std::function<void(CtlObject &)> paint = [&](CtlObject &o) {
       if (!o.shown()) return;
       const QRect r = o.windowRect();
@@ -258,7 +279,7 @@ private:
     for (quint32 id : {Warn, Block, WarnSeparator, AddBuddy}) ctlShowControl(*group_, id, conversation);
     if (conversation) { focus_ = 1; updateTitle(); }
   }
-  void updateTitle() { const QString name = recipient(); setTitle(name.isEmpty() ? aimString(517) : QStringLiteral("%1 - %2").arg(name, aimString(517))); } // STRING 515 "%s - %s" with STRING 517
+  void updateTitle() { const QString name = recipient(); const QString kind = aimString(directConnected() ? 657 : 517); setTitle(name.isEmpty() ? kind : QStringLiteral("%1 - %2").arg(name, kind)); } // STRING 515 "%s - %s" with STRING 517, or 657 "Direct Instant Message" while connected
   void layout() {
     const QRect c = client(); const int menuTop = c.top() + 4;
     menuRects_ = menu_.layout(c.left(), menuTop, c.width());
@@ -342,13 +363,23 @@ private:
     const QRect view = rect.adjusted(3, 2, -3, -2); editor.document.setTextWidth(qMax(1, view.width())); editor.document.documentLayout()->documentSize();
     const int position = editor.document.documentLayout()->hitTest(QPointF(point.x() - view.left(), point.y() - view.top() + editor.scroll), Qt::FuzzyHit); if (position >= 0) editor.cursor.setPosition(position);
   }
-  void edited() { if (focus_ == 0) { if (recipientChanged) recipientChanged(recipient()); } requestUpdate(); }
+  void edited() {
+    if (focus_ == 0) { if (recipientChanged) recipientChanged(recipient()); }
+    else if (directConnected()) { // typing frames: 0x0E typing, 0x06 typed (after a pause), 0x02 nothing typed
+      const quint8 state = compose_.text().isEmpty() ? 0x02 : 0x0E;
+      if (state != lastTyping_) { direct_->sendTyping(state); lastTyping_ = state; }
+      if (state == 0x0E) typingTimer_.start();
+    }
+    requestUpdate();
+  }
   void openMenu(int index) {
     if (index < 0 || index >= menuRects_.size()) return;
     openMenu_ = index; requestUpdate();
-    const int id = popupMenu(this, menu_.items[index].children, canvasToGlobal(menuRects_[index].bottomLeft() + QPoint(0, 1)));
+    // 818 greyed while connected, 819 and Insert > Image greyed while not (0x1138ef4a)
+    const QList<int> disabled = directConnected() ? QList<int>{818} : QList<int>{819, 1104};
+    const int id = popupMenu(this, menu_.items[index].children, canvasToGlobal(menuRects_[index].bottomLeft() + QPoint(0, 1)), disabled);
     openMenu_ = -1; hoveredMenu_ = -1; requestUpdate();
-    if (id) command(quint32(id));
+    if (id && !disabled.contains(id)) command(quint32(id));
   }
   void showRecentNames(const QRect &field) {
     QList<MenuItem> items; for (const QString &name : QSettings().value(QStringLiteral("IM/recentScreenNames")).toStringList()) { MenuItem item; item.text = QString(name).replace(QLatin1Char('&'), QStringLiteral("&&")); item.id = 1000 + int(items.size()); items.append(item); }
@@ -389,6 +420,7 @@ private:
     case AteToolbar::Link: if (ate::editLink(this, compose_.cursor)) edited(); focus_ = 1; requestUpdate(); return;
     case AteToolbar::Greeting: openGreeting(); return;
     case AteToolbar::ConnectImage: this->command(818); return; // same as People > Connect to Send IM Image
+    case AteToolbar::InsertPicture: this->command(1104); return; // Insert Picture (0x265) while connected
     default: return;
     }
   }
@@ -432,6 +464,9 @@ private:
     case AddBuddy: case 670: userActions::addBuddy(this, client_, recipient()); return;  // Add Buddy button / People > Add to Buddy List...
     case GetInfo: case 669: BuddyInfoWindow::open(client_, recipient(), [this](int, const QString &name) { if (openMessage) openMessage(name); }); return; // Get Info button / People > Info...
     case 665: if (inviteToChat) inviteToChat(recipient()); return;                       // People > Send Chat Invitation... / &Chat
+    case 818: if (connectImage) connectImage(this); return;            // People > Connect to Send IM Image
+    case 819: if (closeImage) closeImage(this); return;                 // People > Close IM Image Connection
+    case 1104: if (directConnected() && ate::insertPicture(this, compose_.cursor)) { focus_ = 1; edited(); } return; // Insert > Image or Sound File (only while connected)
     case 1106: toolCommand(AteToolbar::Link); return;                                  // Insert > Web Link...
     case 1198: case 0x4B0: openGreeting(); return;                                        // People > Send IM Greeting
     default: return; // Talk (voice) and the rendezvous items are not implemented
@@ -447,6 +482,13 @@ private:
     const QString target = recipient(), text = compose_.text();
     if (sending_ || text.trimmed().isEmpty()) return;
     if (target.isEmpty()) { errorBox(aimString(525)); focus_ = 0; requestUpdate(); return; }  // STRING 525
+    if (directConnected()) { // IM Image connection: the whole compose pane, images included, goes as one ODC2 frame
+      quint16 encoding = 0; const QByteArray payload = ate::directPayload(compose_.document, prefs::composeWindowColor(), &encoding);
+      direct_->sendMessage(payload, encoding); direct_->sendTyping(0x02); lastTyping_ = 0x02;
+      transcript_.appendMessage(client_ ? client_->screenName() : QString(), ate::directHtml(payload, encoding, transcript_.document), true);
+      playAimSound(AimSound::ImSend); compose_.clear(); compose_.cursor.setCharFormat(prefs::composeFormat()); setMode(Conversation); requestUpdate(); return;
+    }
+    if (ate::hasImages(compose_.document)) { errorBox(aimString(1326)); return; } // STRING 1326: images need the direct connection
     if (!client_ || !client_->connected()) { errorBox(aimString(542)); return; }            // STRING 542
     sendAttempt_ = true; attemptError_.clear(); if (sendStarted) sendStarted(this);
     const QString html = aimHtml(compose_.document);
@@ -483,6 +525,9 @@ private:
   Mode mode_ = NewMessage;
   QString pendingRecipient_, pendingText_, pendingPlain_, attemptError_;
   AteToolbar toolbar_{AteToolbar::Set::InstantMessage};
+  QPointer<DirectConnection> direct_;
+  quint8 peerTyping_ = 0, lastTyping_ = 0;
+  QTimer typingTimer_;
   int hoveredTool_ = -1, pressedTool_ = -1;
   int focus_ = 1, hoveredMenu_ = -1, openMenu_ = -1, splitterY_ = -1;
   quint32 hovered_ = 0, pressed_ = 0;
@@ -517,6 +562,7 @@ struct MessagingWindows::State {
     QObject::connect(client, &OscarClient::messageAccepted, owner, [this](const QString &recipient, quint64) { for (const auto &window : windows) if (window && window->acknowledge(recipient)) return; });
     QObject::connect(client, &OscarClient::operationFailed, owner, [this](const QString &operation, const QString &reason) { const QString message = QStringLiteral("%1: %2").arg(operation, reason); if (activeAttempt) { activeAttempt->recordOperationFailure(message); return; } for (const auto &window : windows) if (window && window->isSending() && operation.startsWith(QStringLiteral("IM to "), Qt::CaseInsensitive) && normalizedName(operation.mid(6)) == normalizedName(window->pendingRecipient())) { window->sendFailed(message); return; } });
     QObject::connect(client, &OscarClient::failed, owner, [this](const QString &reason) { resetPending(reason); });
+    QObject::connect(client, &OscarClient::rendezvousReceived, owner, [this](const aim::oscar::Rendezvous &rv) { incomingRendezvous(rv); });
     QObject::connect(client, &OscarClient::loginStageChanged, owner, [this](int stage) { if (stage == 0) resetPending(); });
   }
   MessageWindow *openQuietly(const QString &recipient) { quietOpen = true; MessageWindow *window = open(recipient); quietOpen = false; return window; }
@@ -531,6 +577,9 @@ struct MessagingWindows::State {
     window->sendFinished = [this](MessageWindow *surface) { if (activeAttempt == surface) activeAttempt.clear(); };
     window->openMessage = [this](const QString &name) { open(name); };
     window->inviteToChat = [this](const QString &name) { if (chatHandler) chatHandler(name); };
+    window->connectImage = [this](MessageWindow *surface) { startImage(surface); };
+    window->closeImage = [this](MessageWindow *surface) { closeImageFor(surface->recipient(), true); };
+    if (DirectSession *session = images.value(key)) if (session->connection && session->connection->isConnected()) window->setDirect(session->connection);
     QObject::connect(window, &QObject::destroyed, owner, [this, window] { for (auto it = byRecipient.begin(); it != byRecipient.end();) { if (it.value().isNull() || it.value().data() == window) it = byRecipient.erase(it); else ++it; } windows.removeIf([window](const QPointer<MessageWindow> &value) { return value.isNull() || value.data() == window; }); if (activeAttempt.data() == window) activeAttempt.clear(); });
     if (quietOpen) window->showMinimized(); else window->showWindow(); return window;
   }
@@ -559,8 +608,154 @@ struct MessagingWindows::State {
     Q_UNUSED(sender); Q_UNUSED(text); return true;
 #endif
   }
+  // ---- IM Image (Research/direct_im.md) ----
+  struct DirectSession { QString name; quint64 cookie = 0; bool proposer = false, reverse = false; QPointer<DirectConnection> connection; void *status = nullptr; QTimer timer; };
+  QHash<QString, DirectSession *> images;
+  QWindow *ownerFor(const QString &name) { MessageWindow *window = byRecipient.value(normalizedName(name)); return window ? static_cast<QWindow *>(window) : transientParent.data(); }
+#ifdef Q_OS_WIN
+  static HWND hwnd(QWindow *window) { return window && window->handle() ? reinterpret_cast<HWND>(window->winId()) : nullptr; }
+  // Rendezvous results are message boxes titled STRING 1010 "Rendezvous Error".
+  void rendezvousBox(QWindow *owner, quint32 id, const QString &name) { const QString text = QString(aimString(id)).replace(QStringLiteral("%s"), name), title = aimString(1010); MessageBoxW(hwnd(owner), reinterpret_cast<LPCWSTR>(text.utf16()), reinterpret_cast<LPCWSTR>(title.utf16()), MB_OK | MB_ICONINFORMATION); }
+#else
+  void rendezvousBox(QWindow *, quint32, const QString &) {}
+#endif
+  static QByteArray ipv4(const QHostAddress &address) { QByteArray out(4, 0); qToBigEndian(address.toIPv4Address(), out.data()); return out; }
+  static QHostAddress localAddress() {
+    // GetLocalIP: first address of this host, the second one with "Use alternate Internet Address" (prefs 276/279, 903).
+    QList<QHostAddress> found; for (const QHostAddress &a : QNetworkInterface::allAddresses()) if (a.protocol() == QAbstractSocket::IPv4Protocol && !a.isLoopback() && !a.isLinkLocal()) found.append(a);
+    if (found.isEmpty()) return QHostAddress(QHostAddress::LocalHost);
+    return prefs::checked(276, 903) && found.size() > 1 ? found[1] : found[0];
+  }
+  aim::oscar::Rendezvous rendezvous(quint16 type, quint64 cookie) {
+    aim::oscar::Rendezvous rv; rv.type = type; rv.cookie = cookie; rv.capability = aim::oscar::capDirectIm();
+    if (type != 1) { QByteArray port(2, 0); qToBigEndian<quint16>(5190, port.data()); QByteArray sequence(2, 0); qToBigEndian<quint16>(1, sequence.data()); rv.values = {{0x03, ipv4(localAddress())}, {0x05, port}, {0x0a, sequence}}; } // the advertised port stays 5190; connections use 4443
+    return rv;
+  }
+  void showStatus(DirectSession *session, int textId) {
+#ifdef Q_OS_WIN
+    if (QSettings().value(QStringLiteral("IM/IMDirectNoStatusDlg"), 0).toInt()) return;
+    if (session->status) { DestroyWindow(static_cast<HWND>(session->status)); session->status = nullptr; }
+    const QString name = session->name;
+    session->status = createOriginalDialog(hwnd(ownerFor(name)), 230, [textId](HWND dialog) { for (int id : {805, 833, 834}) ShowWindow(GetDlgItem(dialog, id), id == textId ? SW_SHOW : SW_HIDE); },
+      [this, name](HWND dialog, int id, int) { if (id != IDCANCEL) return false; if (DirectSession *s = images.value(normalizedName(name))) s->status = nullptr; DestroyWindow(dialog); cancelImage(name, 1); return true; });
+#else
+    Q_UNUSED(session); Q_UNUSED(textId);
+#endif
+  }
+  void closeStatus(DirectSession *session) {
+#ifdef Q_OS_WIN
+    if (session->status) { HWND dialog = static_cast<HWND>(session->status); session->status = nullptr; DestroyWindow(dialog); }
+#endif
+  }
+  DirectSession *newSession(const QString &name, quint64 cookie, bool proposer) {
+    auto *session = new DirectSession; session->name = name; session->cookie = cookie; session->proposer = proposer; session->timer.setSingleShot(true);
+    session->connection = new DirectConnection(cookie, client->screenName(), owner);
+    QObject::connect(session->connection, &DirectConnection::connected, owner, [this, name] { imageConnected(name); });
+    QObject::connect(session->connection, &DirectConnection::connectFailed, owner, [this, name] { imageConnectFailed(name); });
+    QObject::connect(session->connection, &DirectConnection::closed, owner, [this, name] { closeImageFor(name, false); });
+    QObject::connect(session->connection, &DirectConnection::messageReceived, owner, [this, name](const QByteArray &payload, quint16 encoding, quint8 flags) { MessageWindow *window = open(name); playAimSound(AimSound::ImReceive); window->appendDirect(name, payload, encoding, flags); window->showWindow(); });
+    QObject::connect(session->connection, &DirectConnection::typingChanged, owner, [this, name](quint8 flags) { if (MessageWindow *window = byRecipient.value(normalizedName(name))) window->setPeerTyping(flags); });
+    images.insert(normalizedName(name), session); return session;
+  }
+  void dropSession(const QString &name) {
+    DirectSession *session = images.take(normalizedName(name)); if (!session) return;
+    closeStatus(session); session->timer.stop();
+    if (session->connection) { session->connection->disconnect(owner); session->connection->close(); session->connection->deleteLater(); }
+    if (MessageWindow *window = byRecipient.value(normalizedName(name))) window->setDirect(nullptr);
+    delete session;
+  }
+  void startImage(MessageWindow *window) {
+    const QString name = window->recipient(); if (name.isEmpty() || !client || !client->connected()) return;
+    if (DirectSession *existing = images.value(normalizedName(name))) { if (existing->connection && existing->connection->isConnected()) return; }
+    for (DirectSession *other : images) if (!other->connection || !other->connection->isConnected()) { rendezvousBox(window, 1775, name); return; } // STRING 1775: one pending connection at a time
+#ifdef Q_OS_WIN
+    // RT_DIALOG 228 "Start IM Images Connection" (title STRING 1008) unless IM\IMDirectNoStartDlg.
+    if (!QSettings().value(QStringLiteral("IM/IMDirectNoStartDlg"), 0).toInt()) {
+      bool connect = false, dontShow = false;
+      runOriginalDialog(hwnd(window), 228, [&](HWND dialog) { const QString title = QString(aimString(1008)).replace(QStringLiteral("%s"), name); SetWindowTextW(dialog, reinterpret_cast<LPCWSTR>(title.utf16())); },
+        [&](HWND dialog, int id, int) { if (id == 831 || id == 832 || id == IDCANCEL) { connect = id == 831; dontShow = IsDlgButtonChecked(dialog, 825) == BST_CHECKED; EndDialog(dialog, id); return true; } return false; });
+      if (dontShow) QSettings().setValue(QStringLiteral("IM/IMDirectNoStartDlg"), 1);
+      if (!connect) return;
+    }
+#endif
+    const quint64 cookie = QRandomGenerator::global()->generate64();
+    DirectSession *session = newSession(name, cookie, true);
+    if (!session->connection->listen()) { dropSession(name); rendezvousBox(window, 1025, name); return; } // DirectListen on 4443
+    client->sendRendezvous(name, rendezvous(0, cookie));
+    showStatus(session, 805);
+    QObject::connect(&session->timer, &QTimer::timeout, owner, [this, name] { rendezvousBox(ownerFor(name), 1022, name); cancelImage(name, 1); });
+    session->timer.start(300000); // proposal timer 300 s
+  }
+  void cancelImage(const QString &name, quint16 reason) {
+    DirectSession *session = images.value(normalizedName(name)); if (!session) return;
+    aim::oscar::Rendezvous rv = rendezvous(1, session->cookie); QByteArray value(2, 0); qToBigEndian(reason, value.data()); rv.values = {{0x0b, value}};
+    if (client && client->connected() && !(session->connection && session->connection->isConnected())) client->sendRendezvous(name, rv);
+    dropSession(name);
+  }
+  void closeImageFor(const QString &name, bool local) {
+    DirectSession *session = images.value(normalizedName(name)); if (!session) return;
+    const bool wasConnected = session->connection && (session->connection->isConnected() || !local);
+    dropSession(name);
+    if (MessageWindow *window = byRecipient.value(normalizedName(name)); window && wasConnected) window->appendPresenceNotice(QString(aimString(658)).replace(QStringLiteral("%s"), name)); // STRING 658
+  }
+  void imageConnected(const QString &name) {
+    DirectSession *session = images.value(normalizedName(name)); if (!session) return;
+    session->timer.stop(); closeStatus(session);
+    MessageWindow *window = open(name); window->setDirect(session->connection); window->showWindow();
+    window->appendPresenceNotice(QString(aimString(1024)).replace(QStringLiteral("%s"), name)); // STRING 1024 "%s is now directly connected"
+  }
+  void imageConnectFailed(const QString &name) {
+    DirectSession *session = images.value(normalizedName(name)); if (!session) return;
+    if (session->proposer || session->reverse) return; // the proposer keeps listening for its own timer
+    // Reverse connect (event 0xA at the acceptor): listen on 4443, send ACCEPT, wait 30 s.
+    session->reverse = true;
+    if (!session->connection->listen()) { rendezvousBox(ownerFor(name), 1025, name); cancelImage(name, 3); return; }
+    client->sendRendezvous(name, rendezvous(2, session->cookie)); showStatus(session, 834);
+    session->timer.disconnect(); QObject::connect(&session->timer, &QTimer::timeout, owner, [this, name] { rendezvousBox(ownerFor(name), 1025, name); cancelImage(name, 3); });
+    session->timer.start(30000);
+  }
+  static QList<QHostAddress> addresses(const aim::oscar::Rendezvous &rv) {
+    QList<QHostAddress> out; for (quint16 tag : {quint16(4), quint16(3), quint16(2)}) for (const auto &tlv : rv.values) if (tlv.tag == tag && tlv.value.size() == 4) { const QHostAddress a(qFromBigEndian<quint32>(tlv.value.constData())); if (!a.isNull() && !out.contains(a)) out.append(a); }
+    return out;
+  }
+  void incomingRendezvous(const aim::oscar::Rendezvous &rv) {
+    if (rv.capability != aim::oscar::capDirectIm()) return;
+    const QString name = rv.sender; DirectSession *session = images.value(normalizedName(name));
+    if (rv.type == 1) { // cancel: notice by reason (TLV 0x0B)
+      if (!session || session->cookie != rv.cookie) return;
+      quint16 reason = 0xffff; for (const auto &tlv : rv.values) if (tlv.tag == 0x0b && tlv.value.size() == 2) reason = qFromBigEndian<quint16>(tlv.value.constData());
+      const quint32 id = !session->proposer ? 1015 : reason == 1 ? 1017 : reason == 2 ? 1016 : reason == 5 ? 1019 : reason == 0 ? 1020 : reason == 7 ? 1347 : 1015;
+      dropSession(name); rendezvousBox(ownerFor(name), id, name); return;
+    }
+    if (rv.type == 2) { // ACCEPT: the acceptor could not reach us and listens itself; connect to it (we keep listening too)
+      if (!session || session->cookie != rv.cookie || !session->proposer) return;
+      session->connection->connectTo(addresses(rv)); return;
+    }
+    if (rv.type != 0) return;
+    if (session) { if (session->cookie == rv.cookie) return; cancelImage(name, 2); } // glare/duplicate: keep the newest
+    // Accept policy (prefs page 276): buddies 767 allow / 770 approve / 895 deny, others 768 / 769 / 765.
+    bool buddy = false; for (const auto &item : client->roster()) buddy = buddy || (item.classId == 0 && normalizedName(item.name) == normalizedName(name));
+    const bool allow = buddy ? prefs::checked(276, 767) : prefs::checked(276, 768), deny = buddy ? prefs::checked(276, 895) : prefs::checked(276, 765);
+    auto reject = [&](quint16 reason) { aim::oscar::Rendezvous answer = rendezvous(1, rv.cookie); QByteArray value(2, 0); qToBigEndian(reason, value.data()); answer.values = {{0x0b, value}}; client->sendRendezvous(name, answer); };
+    if (deny) { reject(2); return; }
+    if (!allow) {
+#ifdef Q_OS_WIN
+      // RT_DIALOG 229 "Receive IM Images Connection" (title STRING 1009): Accept 792, Reject 2, Ignore 799, Warn 793.
+      int choice = 0; MessageWindow *window = open(name);
+      runOriginalDialog(hwnd(window), 229, [&](HWND dialog) { const QString title = QString(aimString(1009)).replace(QStringLiteral("%s"), name); SetWindowTextW(dialog, reinterpret_cast<LPCWSTR>(title.utf16())); },
+        [&](HWND dialog, int id, int) { if (id == 792 || id == IDCANCEL || id == 799 || id == 793) { choice = id; EndDialog(dialog, id); return true; } return false; });
+      if (choice == 793) { userActions::warn(window, client, name); reject(1); return; }
+      if (choice == 799) { reject(2); return; }
+      if (choice != 792) { reject(1); return; }
+#endif
+    }
+    // Accept: connect to the verified address (TLV 4), then TLV 3, port 4443; no ACCEPT is sent on this path.
+    DirectSession *accepted = newSession(name, rv.cookie, false);
+    open(name)->showWindow(); showStatus(accepted, 833);
+    accepted->connection->connectTo(addresses(rv));
+  }
   void resetPending(const QString &reason = QString()) { for (const auto &window : windows) if (window) window->resetPending(reason); activeAttempt.clear(); }
-  void shutdown() { for (const auto &window : windows) if (window) { window->recipientChanged = {}; window->sendStarted = {}; window->sendFinished = {}; window->openMessage = {}; delete window.data(); } windows.clear(); byRecipient.clear(); activeAttempt.clear(); }
+  void shutdown() { for (const QString &name : images.keys()) dropSession(images.value(name)->name); for (const auto &window : windows) if (window) { window->recipientChanged = {}; window->sendStarted = {}; window->sendFinished = {}; window->openMessage = {}; delete window.data(); } windows.clear(); byRecipient.clear(); activeAttempt.clear(); }
 };
 
 MessagingWindows::MessagingWindows(OscarClient *client, QWindow *owner, QObject *parent) : QObject(parent), state_(std::make_unique<State>(this, client, owner)) {}
