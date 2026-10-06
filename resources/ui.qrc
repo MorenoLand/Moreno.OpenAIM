@@ -127,6 +127,21 @@
     <file alias="265">art/265.bmp</file>
     <file alias="266">art/266.bmp</file>
     <file alias="267">art/267.bmp</file>
+    <file alias="1000">art/1000.bmp</file>
+    <file alias="1001">art/1001.bmp</file>
+    <file alias="1004">art/1004.bmp</file>
+    <file alias="1005">art/1005.bmp</file>
+    <file alias="1006">art/1006.bmp</file>
+    <file alias="1007">art/1007.bmp</file>
+    <file alias="1008">art/1008.bmp</file>
+    <file alias="1009">art/1009.bmp</file>
+    <file alias="1014">art/1014.bmp</file>
+    <file alias="1015">art/1015.bmp</file>
+    <file alias="1018">art/1018.bmp</file>
+    <file alias="1027">art/1027.bmp</file>
+    <file alias="1028">art/1028.bmp</file>
+    <file alias="1029">art/1029.bmp</file>
+    <file alias="1035">art/1035.bmp</file>
   </qresource>
   <qresource prefix="/aim/artwork">
     <file alias="1">artwork/1.bin</file>

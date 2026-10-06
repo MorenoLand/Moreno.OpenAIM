@@ -44,6 +44,8 @@ set(AIM_SOURCES
   src/ui/messaging_window.h
   src/ui/menu_template.cpp
   src/ui/menu_template.h
+  src/ui/menu_bar.cpp
+  src/ui/menu_bar.h
   src/ui/ctl_group.cpp
   src/ui/ctl_group.h
   src/ui/native_dialog.cpp

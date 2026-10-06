@@ -1,96 +1,138 @@
 #include "messaging_window.h"
+#include "ctl_group.h"
+#include "menu_bar.h"
+#include "window_base.h"
 #include <QAbstractTextDocumentLayout>
-#include <QBackingStore>
 #include <QClipboard>
-#include <QEvent>
+#include <QDateTime>
 #include <QFontMetricsF>
 #include <QGuiApplication>
-#include <QIcon>
-#include <QInputMethodEvent>
 #include <QHash>
-#include <QList>
+#include <QInputMethodEvent>
 #include <QKeyEvent>
-#include <QMouseEvent>
+#include <QList>
+#include <QLocale>
+#include <QMoveEvent>
 #include <QPainter>
 #include <QPointer>
 #include <QRegularExpression>
-#include <QRegion>
-#include <QResizeEvent>
+#include <QSettings>
 #include <QTextBlock>
 #include <QTextCursor>
 #include <QTextDocument>
 #include <QTextLayout>
 #include <QWheelEvent>
-#include <QWindow>
 #include <functional>
 #include <limits>
 #include <utility>
+#ifdef Q_OS_WIN
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
 
+// Instant Message window of icbmui.ocm (Research/im_window.md): CTLGROUP 103 laid out by the ported CTLGROUP engine,
+// RT_MENU 101, modes from SetMode 0x113908db and history formatting from AppendMsg 0x1138fe5c.
 namespace {
-QFont aimFont(bool bold = false) { QFont font(QStringLiteral("MS Sans Serif"), 8, bold ? QFont::Bold : QFont::Normal); return font; }
+enum : quint32 { ToRow = 0x191, ToCombo = 0x192, History = 0x193, Compose = 0x194, Warn = 0x195, Block = 0x196, AddBuddy = 0x197, BuddyIcon = 0x198, Send = 0x199, RateMeter = 0x19a, Talk = 0x12, GetInfo = 0x16f, WarnSeparator = 0x2b7 };
+enum Mode { NewMessage = 0x11, WithRecipient = 1, Conversation = 2 };
+constexpr int ToolbarHeight = 18, SplitterBand = 4, HistoryMinimum = 20, ComposeMinimum = 40;
+const QColor Face(240, 240, 240), Shadow(160, 160, 160), Highlight(255, 255, 255), PaneBorder(130, 135, 144);
+QString aimString(quint32 id) { return aimEnvironment().string(id); }
+QFont ateFont(bool bold = false) { QFont font(QStringLiteral("Times New Roman")); font.setPixelSize(16); font.setBold(bold); return font; } // AIM default IM font: Times New Roman 12 pt
+QFont controlFont() { return CtlEnvironment::font(106); }
 QString normalizedName(QString name) { name.remove(QLatin1Char(' ')); return name.toCaseFolded(); }
 bool isHtml(const QString &text) { return text.contains(QRegularExpression(QStringLiteral("</?[A-Za-z!][^>]*>"))); }
+
 class TextEditor {
 public:
-  TextEditor() : cursor(&document) { document.setDefaultFont(aimFont()); document.setDocumentMargin(0); document.setUndoRedoEnabled(true); }
+  explicit TextEditor(const QFont &font) : cursor(&document) { document.setDefaultFont(font); document.setDocumentMargin(0); document.setUndoRedoEnabled(true); }
   QString text() const { return document.toPlainText(); }
   void setText(const QString &value) { document.setPlainText(value); cursor = QTextCursor(&document); cursor.movePosition(QTextCursor::End); }
   void clear() { setText(QString()); }
-  bool handleKey(QKeyEvent *event, bool singleLine, bool submitOnEnter, bool *submit) {
-    const Qt::KeyboardModifiers modifiers = event->modifiers();
-    const bool command = modifiers.testFlag(Qt::ControlModifier) || modifiers.testFlag(Qt::MetaModifier);
+  bool handleKey(QKeyEvent *event, bool singleLine, bool *submit) {
+    const Qt::KeyboardModifiers modifiers = event->modifiers(); const bool command = modifiers.testFlag(Qt::ControlModifier) || modifiers.testFlag(Qt::MetaModifier);
+    const QTextCursor::MoveMode mode = modifiers.testFlag(Qt::ShiftModifier) ? QTextCursor::KeepAnchor : QTextCursor::MoveAnchor;
     if (command && event->key() == Qt::Key_A) { cursor.select(QTextCursor::Document); return true; }
-    if (command && (event->key() == Qt::Key_C || event->key() == Qt::Key_X)) { if (!cursor.hasSelection()) return true; QGuiApplication::clipboard()->setText(cursor.selectedText()); if (event->key() == Qt::Key_X) cursor.removeSelectedText(); return true; }
-    if (command && event->key() == Qt::Key_V) { QString value = QGuiApplication::clipboard()->text(); if (singleLine) value.replace(QRegularExpression(QStringLiteral("[\\r\\n]+")), QStringLiteral(" ")); cursor.insertText(value); return true; }
-    if (event->key() == Qt::Key_Backspace) { cursor.deletePreviousChar(); return true; }
-    if (event->key() == Qt::Key_Delete) { cursor.deleteChar(); return true; }
-    if (event->key() == Qt::Key_Left) { cursor.movePosition(QTextCursor::PreviousCharacter, modifiers.testFlag(Qt::ShiftModifier) ? QTextCursor::KeepAnchor : QTextCursor::MoveAnchor); return true; }
-    if (event->key() == Qt::Key_Right) { cursor.movePosition(QTextCursor::NextCharacter, modifiers.testFlag(Qt::ShiftModifier) ? QTextCursor::KeepAnchor : QTextCursor::MoveAnchor); return true; }
-    if (event->key() == Qt::Key_Home) { cursor.movePosition(QTextCursor::StartOfLine, modifiers.testFlag(Qt::ShiftModifier) ? QTextCursor::KeepAnchor : QTextCursor::MoveAnchor); return true; }
-    if (event->key() == Qt::Key_End) { cursor.movePosition(QTextCursor::EndOfLine, modifiers.testFlag(Qt::ShiftModifier) ? QTextCursor::KeepAnchor : QTextCursor::MoveAnchor); return true; }
-    if (event->key() == Qt::Key_Return || event->key() == Qt::Key_Enter) { if (submitOnEnter && !modifiers.testFlag(Qt::ShiftModifier)) { if (submit) *submit = true; } else if (!singleLine) cursor.insertText(QStringLiteral("\n")); return true; }
-    if (!event->text().isEmpty() && !modifiers.testFlag(Qt::ControlModifier) && !modifiers.testFlag(Qt::AltModifier) && !modifiers.testFlag(Qt::MetaModifier)) { QString value = event->text(); if (singleLine) value.replace(QRegularExpression(QStringLiteral("[\\r\\n]+")), QStringLiteral(" ")); cursor.insertText(value); return true; }
+    if (command && (event->key() == Qt::Key_C || event->key() == Qt::Key_X)) { copy(event->key() == Qt::Key_X); return true; }
+    if (command && event->key() == Qt::Key_V) { paste(singleLine); return true; }
+    switch (event->key()) {
+    case Qt::Key_Backspace: cursor.deletePreviousChar(); return true;
+    case Qt::Key_Delete: cursor.deleteChar(); return true;
+    case Qt::Key_Left: cursor.movePosition(QTextCursor::PreviousCharacter, mode); return true;
+    case Qt::Key_Right: cursor.movePosition(QTextCursor::NextCharacter, mode); return true;
+    case Qt::Key_Up: if (!singleLine) cursor.movePosition(QTextCursor::Up, mode); return true;
+    case Qt::Key_Down: if (!singleLine) cursor.movePosition(QTextCursor::Down, mode); return true;
+    case Qt::Key_Home: cursor.movePosition(QTextCursor::StartOfLine, mode); return true;
+    case Qt::Key_End: cursor.movePosition(QTextCursor::EndOfLine, mode); return true;
+    case Qt::Key_Return: case Qt::Key_Enter:
+      if (!singleLine && (modifiers.testFlag(Qt::ShiftModifier) || modifiers.testFlag(Qt::ControlModifier))) cursor.insertText(QStringLiteral("\n")); else if (submit) *submit = true;
+      return true;
+    default: break;
+    }
+    if (!event->text().isEmpty() && !command && !modifiers.testFlag(Qt::AltModifier) && event->text().at(0).isPrint()) { input(event->text(), singleLine); return true; }
     return false;
   }
+  void copy(bool cut) { if (!cursor.hasSelection()) return; QGuiApplication::clipboard()->setText(cursor.selectedText().replace(QChar::ParagraphSeparator, QLatin1Char('\n'))); if (cut) cursor.removeSelectedText(); }
+  void paste(bool singleLine) { input(QGuiApplication::clipboard()->text(), singleLine); }
   void input(const QString &value, bool singleLine) { QString text = value; if (singleLine) text.replace(QRegularExpression(QStringLiteral("[\\r\\n]+")), QStringLiteral(" ")); cursor.insertText(text); }
   QTextDocument document;
   QTextCursor cursor;
   qreal scroll = 0;
 };
+
+// History pane: AppendMsg header "<b>Name</b>:" in red (self) or blue (buddy), "<br>" before every later message.
 class Transcript {
 public:
-  Transcript() { document.setDefaultFont(aimFont()); document.setDocumentMargin(0); }
-  void append(const QString &sender, const QString &text, bool html) {
-    QTextCursor cursor(&document); cursor.movePosition(QTextCursor::End); if (!document.isEmpty()) cursor.insertBlock(); QTextCharFormat name; name.setFontWeight(QFont::Bold); cursor.insertText(sender, name); cursor.insertBlock(); if (html) cursor.insertHtml(text); else cursor.insertText(text); cursor.insertBlock(); followBottom = true;
+  Transcript() { document.setDefaultFont(ateFont()); document.setDocumentMargin(2); }
+  void appendMessage(const QString &name, const QString &body, bool self) {
+    const QString color = self ? QStringLiteral("#ff0000") : QStringLiteral("#0000ff");
+    const QString separator = body.trimmed().isEmpty() ? QStringLiteral(".") : QStringLiteral(":");
+    QTextCursor cursor(&document); cursor.movePosition(QTextCursor::End);
+    if (!first_) cursor.insertBlock();
+    cursor.insertHtml(QStringLiteral("<font color=%1><b>%2</b>%3</font>&nbsp;").arg(color, name.toHtmlEscaped(), separator));
+    cursor.insertHtml(body); first_ = false; followBottom = true;
   }
-  void appendHtml(const QString &html) { QTextCursor cursor(&document); cursor.movePosition(QTextCursor::End); if (!document.isEmpty()) cursor.insertBlock(); cursor.insertHtml(html); cursor.insertBlock(); }
+  void appendNotice(const QString &html) { QTextCursor cursor(&document); cursor.movePosition(QTextCursor::End); if (!first_) cursor.insertBlock(); cursor.insertHtml(QStringLiteral("<hr>") + html); first_ = false; followBottom = true; }
   QTextDocument document;
   qreal scroll = 0;
   bool followBottom = true;
+private:
+  bool first_ = true;
 };
-void drawButton(QPainter &painter, const QRect &rect, const QString &text, bool enabled, bool pressed) {
-  painter.fillRect(rect, pressed ? QColor(220, 220, 220) : QColor(250, 250, 250)); painter.setPen(QColor(90, 90, 90)); painter.drawRect(rect); painter.setPen(enabled ? QColor(20, 20, 20) : QColor(140, 140, 140)); painter.setFont(aimFont()); painter.drawText(rect, Qt::AlignCenter, text);
+
+QImage artImage(quint32 id) {
+  static QHash<quint32, QImage> cache; auto it = cache.find(id); if (it != cache.end()) return *it;
+  // The artwork colour key is the bitmap's top-left pixel (magenta for most art, grey for the Talk art).
+  QImage image = QImage(QStringLiteral(":/aim/art/%1").arg(id)).convertToFormat(QImage::Format_ARGB32);
+  if (!image.isNull()) { const QRgb key = image.pixel(0, 0) & 0x00ffffffu; for (int y = 0; y < image.height(); ++y) { auto *line = reinterpret_cast<QRgb *>(image.scanLine(y)); for (int x = 0; x < image.width(); ++x) if ((line[x] & 0x00ffffffu) == key) line[x] = 0; } }
+  cache.insert(id, image); return image;
 }
-void drawField(QPainter &painter, const QRect &rect, TextEditor &editor, bool focused) {
-  painter.fillRect(rect, Qt::white); painter.setPen(QColor(128, 128, 128)); painter.drawRect(rect); editor.document.setTextWidth(100000); const QString value = editor.text(); const QFont font = aimFont(); const QFontMetricsF metrics(font); const qsizetype position = qBound(qsizetype(0), editor.cursor.position(), qsizetype(value.size())); const qreal caretX = metrics.horizontalAdvance(value.left(position)); const qreal scroll = qMax(qreal(0), caretX - rect.width() + 14); painter.save(); painter.setClipRect(rect.adjusted(1, 1, -1, -1)); painter.setFont(font); painter.setPen(QColor(20, 20, 20)); const qreal x = rect.left() + 5 - scroll; const qreal baseline = rect.center().y() + (metrics.ascent() - metrics.descent()) / 2; painter.drawText(QPointF(x, baseline), value); if (focused) painter.drawLine(QPointF(rect.left() + 5 + caretX - scroll, rect.top() + 4), QPointF(rect.left() + 5 + caretX - scroll, rect.bottom() - 4)); painter.restore();
+QImage disabledImage(const QImage &source) {
+  QImage image = source.convertToFormat(QImage::Format_ARGB32);
+  for (int y = 0; y < image.height(); ++y) { auto *line = reinterpret_cast<QRgb *>(image.scanLine(y)); for (int x = 0; x < image.width(); ++x) { const int gray = qGray(line[x]); const int value = 128 + gray / 2; line[x] = qRgba(value, value, value, qAlpha(line[x])); } }
+  return image;
 }
-void drawEditor(QPainter &painter, const QRect &rect, TextEditor &editor, bool focused) {
-  painter.fillRect(rect, Qt::white); painter.setPen(QColor(128, 128, 128)); painter.drawRect(rect); const QRect view = rect.adjusted(5, 4, -5, -4); editor.document.setTextWidth(qMax(1, view.width())); const QSizeF documentSize = editor.document.documentLayout()->documentSize(); const QTextBlock block = editor.cursor.block(); const QTextLayout *layout = block.layout(); const int blockPosition = editor.cursor.position() - block.position(); const QTextLine line = layout ? layout->lineForTextPosition(blockPosition) : QTextLine(); const QRectF blockRect = editor.document.documentLayout()->blockBoundingRect(block); const qreal caretY = line.isValid() ? blockRect.top() + line.y() + line.height() : blockRect.bottom(); editor.scroll = qBound(qreal(0), caretY - view.height() + 4, qMax(qreal(0), documentSize.height() - view.height())); painter.save(); painter.setClipRect(view); painter.translate(view.left(), view.top() - editor.scroll); QAbstractTextDocumentLayout::PaintContext context; context.clip = QRectF(0, editor.scroll, view.width(), view.height()); if (editor.cursor.hasSelection()) { QAbstractTextDocumentLayout::Selection selection; selection.cursor = editor.cursor; selection.format.setBackground(QColor(0, 120, 215)); selection.format.setForeground(Qt::white); context.selections.append(selection); } editor.document.documentLayout()->draw(&painter, context); if (focused && line.isValid()) { const qreal x = line.cursorToX(blockPosition); const qreal y = blockRect.top() + line.y(); painter.setPen(QColor(20, 20, 20)); painter.drawLine(QPointF(blockRect.left() + x, y), QPointF(blockRect.left() + x, y + line.height())); } painter.restore();
+void drawEtched(QPainter &p, const QRect &r) {
+  // CtlGroupPaintBackground frame for groups with flag 0x20 (0x12204c94).
+  const int L = r.left(), T = r.top(), R = r.left() + r.width(), B = r.top() + r.height();
+  p.setPen(Shadow); p.drawLine(L, B, L, T); p.drawLine(L, T, R - 1, T); p.drawLine(R - 1, T, R - 1, B - 1); p.drawLine(R - 1, B - 1, L, B - 1);
+  p.setPen(Highlight); p.drawLine(L + 1, B - 2, L + 1, T + 1); p.drawLine(L + 1, T + 1, R - 1, T + 1); p.drawLine(R, T, R, B); p.drawLine(R, B, L - 1, B);
 }
-void drawDocument(QPainter &painter, const QRect &rect, QTextDocument &document, qreal scroll) {
-  painter.fillRect(rect, Qt::white); painter.setPen(QColor(128, 128, 128)); painter.drawRect(rect); const QRect view = rect.adjusted(5, 4, -5, -4); document.setTextWidth(qMax(1, view.width())); document.documentLayout()->documentSize(); painter.save(); painter.setClipRect(view); painter.translate(view.left(), view.top() - scroll); document.drawContents(&painter, QRectF(0, scroll, view.width(), view.height())); painter.restore();
-}
-void positionCursor(TextEditor &editor, const QRect &rect, const QPoint &point, bool singleLine, qreal scroll = 0) {
-  if (singleLine) { const QFontMetricsF metrics(aimFont()); const QString value = editor.text(); int best = 0; qreal distance = std::numeric_limits<qreal>::max(); for (int i = 0; i <= value.size(); ++i) { qreal x = metrics.horizontalAdvance(value.left(i)); qreal d = qAbs(point.x() - (rect.left() + 5 + x - scroll)); if (d < distance) { best = i; distance = d; } } editor.cursor.setPosition(best); return; }
-  const QRect view = rect.adjusted(5, 4, -5, -4); editor.document.setTextWidth(qMax(1, view.width())); editor.document.documentLayout()->documentSize(); const QPointF at(point.x() - view.left(), point.y() - view.top() + scroll); const int position = editor.document.documentLayout()->hitTest(at, Qt::FuzzyHit); if (position >= 0) editor.cursor.setPosition(position);
-}
-void drawTranscript(QPainter &painter, const QRect &rect, Transcript &transcript) {
-  painter.fillRect(rect, Qt::white); painter.setPen(QColor(128, 128, 128)); painter.drawRect(rect); const QRect view = rect.adjusted(5, 4, -5, -4); transcript.document.setTextWidth(qMax(1, view.width())); const qreal maxScroll = qMax(qreal(0), transcript.document.documentLayout()->documentSize().height() - view.height()); transcript.scroll = transcript.followBottom ? maxScroll : qBound(qreal(0), transcript.scroll, maxScroll); painter.save(); painter.setClipRect(view); painter.translate(view.left(), view.top() - transcript.scroll); transcript.document.drawContents(&painter, QRectF(0, transcript.scroll, view.width(), view.height())); painter.restore();
-}
-class MessageWindow final : public QWindow {
+
+class MessageWindow final : public WindowBase {
 public:
-  MessageWindow(OscarClient *client, QWindow *transientParent, QObject *owner, const QString &recipient) : QWindow(), backingStore_(this), client_(client), transcript_() {
-    QObject::setParent(owner); setSurfaceType(QSurface::RasterSurface); setFlags(Qt::Window | Qt::WindowTitleHint | Qt::WindowSystemMenuHint | Qt::WindowMinimizeButtonHint | Qt::WindowMaximizeButtonHint | Qt::WindowCloseButtonHint); setIcon(QIcon(QStringLiteral(":/aim/window-icon.ico"))); setTransientParent(transientParent); const qreal dialogUnit = QFontMetricsF(aimFont()).averageCharWidth() / 4.0; resize(qRound(280 * dialogUnit), 400); setMinimumSize(QSize(qRound(280 * dialogUnit), 320)); recipient_.setText(recipient); focus_ = recipient.trimmed().isEmpty() ? 0 : 1; updateTitle();
+  MessageWindow(OscarClient *client, QWindow *transientParent, QObject *owner, const QString &recipient, int cascade)
+      : WindowBase(QStringLiteral("Instant Message"), defaultCanvas()), client_(client), recipient_(QFont(QStringLiteral("MS Sans Serif"), 8)), compose_(ateFont()), menu_(101), group_(loadCtlGroup(103)) {
+    QObject::setParent(owner); Q_UNUSED(transientParent);
+    setResizable(defaultCanvas());
+    recipient_.setText(recipient);
+    setMode(recipient.trimmed().isEmpty() ? NewMessage : WithRecipient);
+    focus_ = recipient.trimmed().isEmpty() ? 0 : 1;
+    const QRect saved = QSettings().value(QStringLiteral("windows/MessageMain")).toRect();
+    setPosition(saved.isValid() ? saved.topLeft() + QPoint(16, 20) * cascade : QPoint(80 + 16 * cascade, 40 + 20 * cascade)); // cascade +16/+20 (0x1138cde0)
+    if (saved.isValid()) resize(saved.size());
   }
   std::function<void(const QString &)> recipientChanged;
   std::function<void(MessageWindow *)> sendStarted;
@@ -100,59 +142,275 @@ public:
   bool isSending() const { return sending_; }
   bool acknowledge(const QString &recipient) {
     if (!sending_ || normalizedName(recipient) != normalizedName(pendingRecipient_)) return false;
-    transcript_.append(client_ ? client_->screenName() : QStringLiteral("You"), pendingText_, false); if (compose_.text().isEmpty()) compose_.clear(); pendingText_.clear(); pendingRecipient_.clear(); sending_ = false; status_.clear(); renderNow(); return true;
+    transcript_.appendMessage(client_ ? client_->screenName() : QString(), pendingText_.toHtmlEscaped().replace(QLatin1Char('\n'), QStringLiteral("<br>")), true);
+    pendingText_.clear(); pendingRecipient_.clear(); sending_ = false; setMode(Conversation); requestUpdate(); return true;
   }
-  void sendFailed(const QString &reason) {
-    if (!sending_) return; const QString current = compose_.text(); compose_.setText(current.isEmpty() ? pendingText_ : pendingText_ + QStringLiteral("\n") + current); pendingText_.clear(); pendingRecipient_.clear(); sending_ = false; status_ = reason; renderNow();
-  }
+  void sendFailed(const QString &reason) { if (!sending_) return; restorePending(); appendFailure(reason); requestUpdate(); }
   void recordOperationFailure(const QString &message) { if (sendAttempt_) attemptError_ = message; else if (sending_) sendFailed(message); }
-  void resetPending(const QString &reason = QString()) { const bool hadPending = sending_; if (sending_) { const QString current = compose_.text(); compose_.setText(current.isEmpty() ? pendingText_ : pendingText_ + QStringLiteral("\n") + current); pendingText_.clear(); pendingRecipient_.clear(); sending_ = false; } if (!reason.isEmpty()) status_ = reason; else if (hadPending) status_.clear(); renderNow(); }
-  void appendIncoming(const QString &sender, const QString &text) { transcript_.append(sender, text, isHtml(text)); status_.clear(); renderNow(); }
+  void resetPending(const QString &reason = QString()) { if (!sending_) return; restorePending(); if (!reason.isEmpty()) appendFailure(reason); requestUpdate(); }
+  void appendIncoming(const QString &sender, const QString &text) { transcript_.appendMessage(sender, isHtml(text) ? text : text.toHtmlEscaped(), false); setMode(Conversation); requestUpdate(); }
   void showWindow() { show(); raise(); requestActivate(); }
 protected:
   bool event(QEvent *event) override {
-    if (event->type() == QEvent::Close) { event->ignore(); hide(); deleteLater(); return true; }
-    if (event->type() == QEvent::Expose || event->type() == QEvent::UpdateRequest) { renderNow(); return true; }
-    if (event->type() == QEvent::InputMethod) { auto *input = static_cast<QInputMethodEvent *>(event); if (!input->commitString().isEmpty()) { (focus_ == 0 ? recipient_ : compose_).input(input->commitString(), focus_ == 0); if (focus_ == 0) { updateTitle(); if (recipientChanged) recipientChanged(recipient()); } renderNow(); } event->accept(); return true; }
-    return QWindow::event(event);
+    if (event->type() == QEvent::InputMethod) { auto *input = static_cast<QInputMethodEvent *>(event); if (!input->commitString().isEmpty()) { editor().input(input->commitString(), focus_ == 0); edited(); } event->accept(); return true; }
+    return WindowBase::event(event);
   }
-  void resizeEvent(QResizeEvent *event) override { backingStore_.resize(event->size()); renderNow(); }
-  void mousePressEvent(QMouseEvent *event) override {
-    if (event->button() != Qt::LeftButton) return; const QPoint point = event->position().toPoint(); if (recipientRect().contains(point)) { focus_ = 0; positionCursor(recipient_, recipientRect(), point, true); } else if (composeRect().contains(point)) { focus_ = 1; positionCursor(compose_, composeRect(), point, false, compose_.scroll); } else if (sendRect().contains(point)) pressedSend_ = true; renderNow();
+  void moveEvent(QMoveEvent *event) override { WindowBase::moveEvent(event); if (isVisible() && visibility() == QWindow::Windowed) QSettings().setValue(QStringLiteral("windows/MessageMain"), QRect(position(), size())); } // SaveWindowPos "MessageMain" on WM_MOVE
+  void resizeEvent(QResizeEvent *event) override { WindowBase::resizeEvent(event); if (isVisible() && visibility() == QWindow::Windowed) QSettings().setValue(QStringLiteral("windows/MessageMain"), QRect(position(), size())); }
+  void closeRequested() override { hide(); deleteLater(); }
+  void paintContent(QPainter &p) override {
+    layout();
+    p.fillRect(client(), Face);
+    menu_.paint(p, menuRects_, hoveredMenu_, openMenu_);
+    std::function<void(CtlObject &)> paint = [&](CtlObject &o) {
+      if (!o.shown()) return;
+      const QRect r = o.windowRect();
+      switch (o.kind) {
+      case CtlObject::Kind::Group: case CtlObject::Kind::TabGroup:
+        if (o.flags & CtlObject::Padding) drawEtched(p, r);
+        for (const auto &child : o.children) paint(*child);
+        return;
+      case CtlObject::Kind::Static: p.setFont(controlFont()); p.setPen(Qt::black); p.drawText(r.adjusted(0, -2, 20, 2), Qt::AlignLeft | Qt::AlignVCenter, aimString(o.textId)); return;
+      case CtlObject::Kind::PersistentCombo: paintCombo(p, r); return;
+      case CtlObject::Kind::Ate: paintAte(p, o.id == History ? historyRect_ : composeRect_, o.id == Compose); return;
+      case CtlObject::Kind::ArtButton: paintButton(p, o); return;
+      case CtlObject::Kind::Separator: if (r.height() > 2) { p.setPen(Shadow); p.drawLine(r.left(), r.top(), r.left(), r.bottom()); p.setPen(Highlight); p.drawLine(r.left() + 1, r.top(), r.left() + 1, r.bottom()); } else { p.setPen(Shadow); p.drawLine(r.left(), r.top(), r.right(), r.top()); p.setPen(Highlight); p.drawLine(r.left(), r.top() + 1, r.right(), r.top() + 1); } return;
+      case CtlObject::Kind::RateMeter: paintRateMeter(p, r); return;
+      default: return;
+      }
+    };
+    if (group_) paint(*group_);
   }
-  void mouseReleaseEvent(QMouseEvent *event) override { if (event->button() != Qt::LeftButton) return; const bool shouldSend = pressedSend_ && sendRect().contains(event->position().toPoint()); pressedSend_ = false; if (shouldSend) send(); renderNow(); }
-  void keyPressEvent(QKeyEvent *event) override {
-    if (event->key() == Qt::Key_Escape) { close(); return; }
-    if (event->key() == Qt::Key_Tab) { focus_ = 1 - focus_; renderNow(); return; }
-    bool submit = false; TextEditor &editor = focus_ == 0 ? recipient_ : compose_; if (editor.handleKey(event, focus_ == 0, focus_ == 1, &submit)) { if (focus_ == 0) { updateTitle(); if (recipientChanged) recipientChanged(recipient()); } if (submit) send(); renderNow(); event->accept(); return; } QWindow::keyPressEvent(event);
+  void contentMousePress(const QPoint &point, Qt::MouseButton button) override {
+    if (button != Qt::LeftButton) return;
+    layout();
+    if (const int menu = PaintedMenuBar::hit(menuRects_, point); menu >= 0) { openMenu(menu); return; }
+    if (mode_ == Conversation && splitterBand().contains(point)) { draggingSplitter_ = true; return; }
+    if (CtlObject *combo = group_ ? group_->find(ToCombo) : nullptr; combo && combo->shown() && comboRect(combo->windowRect()).contains(point)) {
+      const QRect field = comboRect(combo->windowRect());
+      if (point.x() >= field.right() - 17) { showRecentNames(field); return; }
+      focus_ = 0; placeCursor(recipient_, field.adjusted(3, 0, -18, 0), point, true); requestUpdate(); return;
+    }
+    if (composeText().contains(point)) { focus_ = 1; placeCursor(compose_, composeText(), point, false); requestUpdate(); return; }
+    if (CtlObject *pressed = buttonAt(point)) { pressed_ = pressed->id; requestUpdate(); }
   }
-  void wheelEvent(QWheelEvent *event) override { if (transcriptRect().contains(event->position().toPoint())) transcript_.scroll = qMax(qreal(0), transcript_.scroll - event->angleDelta().y() / 2.0); else if (composeRect().contains(event->position().toPoint())) compose_.scroll = qMax(qreal(0), compose_.scroll - event->angleDelta().y() / 2.0); else { event->ignore(); return; } renderNow(); event->accept(); }
+  void contentMouseMove(const QPoint &point) override {
+    if (draggingSplitter_) { setSplitter(point.y()); requestUpdate(); return; }
+    layout();
+    const int menu = PaintedMenuBar::hit(menuRects_, point); CtlObject *button = buttonAt(point); const quint32 hovered = button ? button->id : 0;
+    setCursor(mode_ == Conversation && splitterBand().contains(point) ? Qt::SizeVerCursor : composeText().contains(point) ? Qt::IBeamCursor : Qt::ArrowCursor);
+    if (menu != hoveredMenu_ || hovered != hovered_) { hoveredMenu_ = menu; hovered_ = hovered; requestUpdate(); }
+  }
+  void contentMouseRelease(const QPoint &point, Qt::MouseButton button) override {
+    if (button != Qt::LeftButton) return;
+    if (draggingSplitter_) { draggingSplitter_ = false; return; }
+    const quint32 pressed = pressed_; pressed_ = 0; requestUpdate();
+    CtlObject *target = buttonAt(point); if (pressed && target && target->id == pressed) command(pressed);
+  }
+  void contentLeave() override { if (hovered_ || hoveredMenu_ >= 0) { hovered_ = 0; hoveredMenu_ = -1; requestUpdate(); } }
+  void contentKeyPress(QKeyEvent *event) override {
+    if (event->key() == Qt::Key_Escape) { closeRequested(); return; }  // IDCANCEL closes (0x1138dbe8)
+    if (event->key() == Qt::Key_Tab || event->key() == Qt::Key_Backtab) { if (toRowShown()) focus_ = 1 - focus_; requestUpdate(); return; }
+    if (event->key() == Qt::Key_F2) { command(399); return; }
+    bool submit = false;
+    if (editor().handleKey(event, focus_ == 0, &submit)) { if (submit) { if (focus_ == 0) focus_ = 1; else command(Send); } edited(); event->accept(); return; }
+    WindowBase::contentKeyPress(event);
+  }
+  void wheelEvent(QWheelEvent *event) override {
+    const QPoint point = canvasPoint(event->position().toPoint());
+    if (mode_ == Conversation && historyRect_.contains(point)) { transcript_.followBottom = false; transcript_.scroll = qMax(qreal(0), transcript_.scroll - event->angleDelta().y() / 2.0); }
+    else if (composeRect_.contains(point)) compose_.scroll = qMax(qreal(0), compose_.scroll - event->angleDelta().y() / 2.0);
+    else { event->ignore(); return; }
+    requestUpdate(); event->accept();
+  }
 private:
-  QRect recipientRect() const { return QRect(57, 9, qMax(100, width() - 69), 23); }
-  QRect transcriptRect() const { return QRect(10, 41, qMax(100, width() - 20), qMax(80, height() - 174)); }
-  QRect composeRect() const { return QRect(10, height() - 119, qMax(100, width() - 20), 76); }
-  QRect sendRect() const { return QRect(width() - 94, height() - 34, 84, 24); }
-  void updateTitle() { const QString name = recipient(); setTitle(name.isEmpty() ? QStringLiteral("Instant Message") : QStringLiteral("%1 - Instant Message").arg(name)); }
+  static QSize defaultCanvas() {
+    // VALUERES 109/110: 380x240 outer window, also the minimum track size (0x1138cda0, 0x1138d7ef).
+    QSize outer(380, 240);
+#ifdef Q_OS_WIN
+    RECT frame{0, 0, 0, 0}; AdjustWindowRectEx(&frame, WS_OVERLAPPEDWINDOW, FALSE, 0);
+    const QSize client(outer.width() - (frame.right - frame.left), outer.height() - (frame.bottom - frame.top));
+    return client + QSize(2, TitleBarHeight + 3);
+#else
+    return outer;
+#endif
+  }
+  QRect client() const {
+#ifdef Q_OS_WIN
+    return QRect(1, TitleBarHeight, width(), height());
+#else
+    return QRect(0, TitleBarHeight, width(), height() - TitleBarHeight);
+#endif
+  }
+  TextEditor &editor() { return focus_ == 0 ? recipient_ : compose_; }
+  bool toRowShown() { CtlObject *row = group_ ? group_->find(ToRow) : nullptr; return row && row->shown(); }
+  void setMode(Mode mode) {
+    // SetMode 0x113908db
+    mode_ = mode; if (!group_) return;
+    ctlShowControl(*group_, BuddyIcon, false);
+    const bool conversation = mode == Conversation;
+    ctlShowControl(*group_, ToRow, !conversation);
+    ctlShowControl(*group_, History, conversation);
+    for (quint32 id : {Warn, Block, WarnSeparator, AddBuddy}) ctlShowControl(*group_, id, conversation);
+    if (conversation) { focus_ = 1; updateTitle(); }
+  }
+  void updateTitle() { const QString name = recipient(); setTitle(name.isEmpty() ? aimString(517) : QStringLiteral("%1 - %2").arg(name, aimString(517))); } // STRING 515 "%s - %s" with STRING 517
+  void layout() {
+    const QRect c = client(); const int menuTop = c.top() + 4;
+    menuRects_ = menu_.layout(c.left(), menuTop, c.width());
+    const int top = PaintedMenuBar::bottom(menuRects_, menuTop);
+    if (group_) ctlMove(*group_, QRect(QPoint(c.left() + 3, top + 5), QPoint(c.right() - 2, c.bottom())), aimEnvironment()); // WM_SIZE: left+3, top+5, right-2 (0x1138e912)
+    CtlObject *history = group_ ? group_->find(History) : nullptr, *compose = group_ ? group_->find(Compose) : nullptr;
+    historyRect_ = history && history->shown() ? history->windowRect() : QRect(); composeRect_ = compose ? compose->windowRect() : QRect();
+    if (mode_ == Conversation && splitterY_ >= 0 && historyRect_.isValid()) {
+      // Splitter drag (0x1138e973): y clamped to [history.top + 20, compose.bottom - 40], 4 px band, compose starts below it.
+      const int y = qBound(historyRect_.top() + HistoryMinimum, splitterY_, composeRect_.bottom() - ComposeMinimum);
+      historyRect_.setBottom(y - 1); composeRect_.setTop(y + SplitterBand);
+    }
+  }
+  QRect splitterBand() const { return historyRect_.isValid() ? QRect(historyRect_.left(), historyRect_.bottom() + 1, historyRect_.width(), composeRect_.top() - historyRect_.bottom() - 1) : QRect(); }
+  void setSplitter(int y) { splitterY_ = y; }
+  QRect composeText() const { return composeRect_.adjusted(1, 1 + ToolbarHeight, -1, -1); }
+  static QRect comboRect(const QRect &window) { return QRect(window.left(), window.top(), window.width(), 23); }
+  CtlObject *buttonAt(const QPoint &point) {
+    CtlObject *found = nullptr;
+    std::function<void(CtlObject &)> visit = [&](CtlObject &o) { if (!o.shown()) return; if (o.kind == CtlObject::Kind::ArtButton && o.art[0] && o.windowRect().contains(point)) found = &o; for (const auto &child : o.children) visit(*child); };
+    if (group_) visit(*group_); return found;
+  }
+  bool enabled(const CtlObject &o) const { if (o.id == Send) return !sending_ && !compose_.text().trimmed().isEmpty(); return true; }
+  void paintButton(QPainter &p, const CtlObject &o) {
+    if (!o.art[0]) return; // art-less buttons are 2x2 placeholders (816 / 665)
+    const bool isEnabled = enabled(o); const int state = !isEnabled ? 0 : (pressed_ == o.id && hovered_ == o.id) ? 2 : hovered_ == o.id ? 1 : 0;
+    QImage image = artImage(o.art[state] ? o.art[state] : o.art[0]); if (!isEnabled) image = disabledImage(image);
+    const QRect r = o.windowRect(); p.drawImage(r.topLeft() + QPoint(1, 1), image); // type-2 art buttons: art + 2 px
+  }
+  void paintCombo(QPainter &p, const QRect &window) {
+    const QRect field = comboRect(window);
+    p.fillRect(field, Qt::white); p.setPen(QColor(122, 122, 122)); p.drawRect(field.adjusted(0, 0, -1, -1));
+    const QPoint c(field.right() - 9, field.center().y()); p.setPen(QPen(QColor(60, 60, 60), 1)); p.drawLine(c + QPoint(-4, -2), c + QPoint(0, 2)); p.drawLine(c + QPoint(0, 2), c + QPoint(4, -2));
+    p.save(); p.setClipRect(field.adjusted(3, 1, -18, -1)); p.setFont(recipient_.document.defaultFont()); p.setPen(Qt::black);
+    const QString text = recipient_.text(); const QFontMetricsF metrics(recipient_.document.defaultFont());
+    const qreal baseline = field.center().y() + (metrics.ascent() - metrics.descent()) / 2; p.drawText(QPointF(field.left() + 4, baseline), text);
+    if (focus_ == 0 && caretOn()) { const qreal x = field.left() + 4 + metrics.horizontalAdvance(text.left(recipient_.cursor.position())); p.drawLine(QPointF(x, field.top() + 4), QPointF(x, field.bottom() - 4)); }
+    p.restore();
+  }
+  void paintAte(QPainter &p, const QRect &r, bool composePane) {
+    if (!r.isValid()) return;
+    p.fillRect(r, Qt::white); p.setPen(PaneBorder); p.drawRect(r.adjusted(0, 0, -1, -1));
+    QRect view = r.adjusted(1, 1, -1, -1);
+    if (composePane) {
+      const QRect toolbar(view.left(), view.top(), view.width(), ToolbarHeight);
+      p.fillRect(toolbar, Face); p.setPen(Shadow); p.drawLine(toolbar.bottomLeft(), toolbar.bottomRight());
+      const QImage strip = artImage(1035); // AimRes toolbar strip; exact geometry pending Research/ate_toolbar.md
+      if (!strip.isNull()) p.drawImage(QPoint(toolbar.center().x() - strip.width() / 2, toolbar.top() + (ToolbarHeight - strip.height()) / 2), strip);
+      view.setTop(toolbar.bottom() + 1);
+      drawEditor(p, view.adjusted(3, 2, -3, -2));
+    } else drawTranscript(p, view.adjusted(3, 2, -3, -2));
+  }
+  void drawEditor(QPainter &p, const QRect &view) {
+    TextEditor &editor = compose_; editor.document.setTextWidth(qMax(1, view.width()));
+    const QSizeF documentSize = editor.document.documentLayout()->documentSize(); const QTextBlock block = editor.cursor.block(); const QTextLayout *layout = block.layout();
+    const int blockPosition = editor.cursor.position() - block.position(); const QTextLine line = layout ? layout->lineForTextPosition(blockPosition) : QTextLine();
+    const QRectF blockRect = editor.document.documentLayout()->blockBoundingRect(block); const qreal caretY = line.isValid() ? blockRect.top() + line.y() + line.height() : blockRect.bottom();
+    editor.scroll = qBound(qreal(0), caretY - view.height() + 2, qMax(qreal(0), documentSize.height() - view.height()));
+    p.save(); p.setClipRect(view); p.translate(view.left(), view.top() - editor.scroll);
+    QAbstractTextDocumentLayout::PaintContext context; context.clip = QRectF(0, editor.scroll, view.width(), view.height());
+    if (editor.cursor.hasSelection()) { QAbstractTextDocumentLayout::Selection selection; selection.cursor = editor.cursor; selection.format.setBackground(QColor(0, 120, 215)); selection.format.setForeground(Qt::white); context.selections.append(selection); }
+    editor.document.documentLayout()->draw(&p, context);
+    if (focus_ == 1 && caretOn() && line.isValid()) { const qreal x = line.cursorToX(blockPosition), y = blockRect.top() + line.y(); p.setPen(Qt::black); p.drawLine(QPointF(blockRect.left() + x, y), QPointF(blockRect.left() + x, y + line.height())); }
+    p.restore();
+  }
+  void drawTranscript(QPainter &p, const QRect &view) {
+    transcript_.document.setTextWidth(qMax(1, view.width()));
+    const qreal maxScroll = qMax(qreal(0), transcript_.document.documentLayout()->documentSize().height() - view.height());
+    transcript_.scroll = transcript_.followBottom ? maxScroll : qBound(qreal(0), transcript_.scroll, maxScroll);
+    if (transcript_.scroll >= maxScroll) transcript_.followBottom = true;
+    p.save(); p.setClipRect(view); p.translate(view.left(), view.top() - transcript_.scroll); transcript_.document.drawContents(&p, QRectF(0, transcript_.scroll, view.width(), view.height())); p.restore();
+  }
+  void paintRateMeter(QPainter &p, const QRect &r) {
+    // _Oscar_RateMeter: 15 cells, 3 px pitch ((15+1)*3 x 8); red/yellow at the low end, green when sending is allowed.
+    p.fillRect(r, QColor(64, 64, 64));
+    for (int i = 0; i < 15; ++i) { const QColor color = i < 2 ? QColor(255, 0, 0) : i < 5 ? QColor(255, 255, 0) : QColor(0, 200, 0); p.fillRect(QRect(r.left() + 2 + i * 3, r.top() + 1, 2, r.height() - 2), color); }
+  }
+  bool caretOn() const { return isActive(); }
+  static void placeCursor(TextEditor &editor, const QRect &rect, const QPoint &point, bool singleLine) {
+    if (singleLine) { const QFontMetricsF metrics(editor.document.defaultFont()); const QString value = editor.text(); int best = 0; qreal distance = std::numeric_limits<qreal>::max(); for (int i = 0; i <= value.size(); ++i) { const qreal d = qAbs(point.x() - (rect.left() + 1 + metrics.horizontalAdvance(value.left(i)))); if (d < distance) { best = i; distance = d; } } editor.cursor.setPosition(best); return; }
+    const QRect view = rect.adjusted(3, 2, -3, -2); editor.document.setTextWidth(qMax(1, view.width())); editor.document.documentLayout()->documentSize();
+    const int position = editor.document.documentLayout()->hitTest(QPointF(point.x() - view.left(), point.y() - view.top() + editor.scroll), Qt::FuzzyHit); if (position >= 0) editor.cursor.setPosition(position);
+  }
+  void edited() { if (focus_ == 0) { if (recipientChanged) recipientChanged(recipient()); } requestUpdate(); }
+  void openMenu(int index) {
+    if (index < 0 || index >= menuRects_.size()) return;
+    openMenu_ = index; requestUpdate();
+    const int id = popupMenu(this, menu_.items[index].children, canvasToGlobal(menuRects_[index].bottomLeft() + QPoint(0, 1)));
+    openMenu_ = -1; hoveredMenu_ = -1; requestUpdate();
+    if (id) command(quint32(id));
+  }
+  void showRecentNames(const QRect &field) {
+    QList<MenuItem> items; for (const QString &name : QSettings().value(QStringLiteral("IM/recentScreenNames")).toStringList()) { MenuItem item; item.text = QString(name).replace(QLatin1Char('&'), QStringLiteral("&&")); item.id = 1000 + int(items.size()); items.append(item); }
+    if (items.isEmpty()) return;
+    const QStringList names = QSettings().value(QStringLiteral("IM/recentScreenNames")).toStringList();
+    const int id = popupMenu(this, items, canvasToGlobal(field.bottomLeft() + QPoint(0, 1)));
+    if (id >= 1000 && id - 1000 < names.size()) { recipient_.setText(names[id - 1000]); focus_ = 1; edited(); }
+  }
+  void command(quint32 id) {
+    switch (id) {
+    case Send: case 1: send(); return;
+    case 2: closeRequested(); return;                                    // File > Close / IDCANCEL
+    case 396: editor().copy(true); requestUpdate(); return;               // Cut
+    case 397: if (focus_ == 1 && !compose_.cursor.hasSelection()) return; editor().copy(false); return; // Copy
+    case 398: editor().paste(focus_ == 0); edited(); return;              // Paste
+    case 399: compose_.input(QLocale::system().toString(QTime::currentTime(), QLocale::ShortFormat), false); focus_ = 1; requestUpdate(); return; // Insert > Timestamp (F2)
+    default: return; // Warn, Block, Add Buddy, Talk, Get Info and the rendezvous items are not implemented yet
+    }
+  }
+  void rememberRecipient(const QString &name) {
+    // CtlGroup persistent combo keyed by STRING 518 "recent IM ScreenNames".
+    QSettings settings; QStringList names = settings.value(QStringLiteral("IM/recentScreenNames")).toStringList();
+    names.removeIf([&](const QString &value) { return normalizedName(value) == normalizedName(name); }); names.prepend(name); while (names.size() > 10) names.removeLast();
+    settings.setValue(QStringLiteral("IM/recentScreenNames"), names);
+  }
   void send() {
-    const QString target = recipient(), text = compose_.text(); if (sending_ || target.isEmpty() || text.trimmed().isEmpty()) return; sendAttempt_ = true; attemptError_.clear(); if (sendStarted) sendStarted(this); const bool queued = client_ && client_->sendMessage(target, text); if (sendFinished) sendFinished(this); sendAttempt_ = false; if (!queued || !attemptError_.isEmpty()) { status_ = attemptError_.isEmpty() ? QStringLiteral("Unable to queue message.") : attemptError_; attemptError_.clear(); renderNow(); return; }
-    pendingRecipient_ = target; pendingText_ = text; sending_ = true; compose_.clear(); status_.clear(); renderNow();
+    const QString target = recipient(), text = compose_.text();
+    if (sending_ || text.trimmed().isEmpty()) return;
+    if (target.isEmpty()) { errorBox(aimString(525)); focus_ = 0; requestUpdate(); return; }  // STRING 525
+    if (!client_ || !client_->connected()) { errorBox(aimString(542)); return; }            // STRING 542
+    sendAttempt_ = true; attemptError_.clear(); if (sendStarted) sendStarted(this);
+    const bool queued = client_->sendMessage(target, text);
+    if (sendFinished) sendFinished(this); sendAttempt_ = false;
+    if (!queued || !attemptError_.isEmpty()) { appendFailure(attemptError_); attemptError_.clear(); requestUpdate(); return; }
+    rememberRecipient(target); pendingRecipient_ = target; pendingText_ = text; sending_ = true; compose_.clear(); updateTitle(); requestUpdate();
   }
-  void renderNow() {
-    if (!isExposed() || width() <= 0 || height() <= 0) return; const QRegion region(0, 0, width(), height()); backingStore_.beginPaint(region); QPainter painter(backingStore_.paintDevice()); painter.fillRect(QRect(0, 0, width(), height()), QColor(240, 240, 240)); painter.setFont(aimFont()); painter.setPen(QColor(20, 20, 20)); painter.drawText(QPoint(11, 25), QStringLiteral("To:")); drawField(painter, recipientRect(), recipient_, focus_ == 0); drawTranscript(painter, transcriptRect(), transcript_); drawEditor(painter, composeRect(), compose_, focus_ == 1); drawButton(painter, sendRect(), QStringLiteral("Send"), !sending_, pressedSend_); if (!status_.isEmpty()) { painter.setFont(aimFont()); painter.setPen(QColor(150, 0, 0)); painter.drawText(QRect(12, height() - 30, width() - 115, 22), Qt::AlignVCenter | Qt::TextSingleLine, status_); } painter.end(); backingStore_.endPaint(); backingStore_.flush(region);
+  void restorePending() { const QString current = compose_.text(); compose_.setText(current.isEmpty() ? pendingText_ : pendingText_ + QStringLiteral("\n") + current); pendingText_.clear(); pendingRecipient_.clear(); sending_ = false; }
+  void appendFailure(const QString &reason) {
+    // Delivery failures become history notices: STRING 545 for an unavailable user, 546 with the error code otherwise.
+    const QString name = recipient().toHtmlEscaped(); const QRegularExpressionMatch code = QRegularExpression(QStringLiteral("0x([0-9a-fA-F]{4})")).match(reason);
+    QString notice;
+    if (code.hasMatch() && code.captured(1).toInt(nullptr, 16) == 4) notice = QString(aimString(545)).replace(QStringLiteral("%s"), name);
+    else if (code.hasMatch()) notice = QString(aimString(546)).replace(QStringLiteral("%s"), name).replace(QStringLiteral("%d"), QString::number(code.captured(1).toInt(nullptr, 16))).replace(QLatin1Char('\n'), QStringLiteral("<br>"));
+    else notice = QString(aimString(522)).replace(QStringLiteral("%s"), name) + (reason.isEmpty() ? QString() : QStringLiteral("<br>") + reason.toHtmlEscaped());
+    transcript_.appendNotice(notice); setMode(Conversation);
   }
-  QBackingStore backingStore_;
+  void errorBox(const QString &text) {
+#ifdef Q_OS_WIN
+    const QString title = aimString(537); MessageBoxW(reinterpret_cast<HWND>(winId()), reinterpret_cast<LPCWSTR>(text.utf16()), reinterpret_cast<LPCWSTR>(title.utf16()), MB_OK | MB_ICONEXCLAMATION);
+#else
+    transcript_.appendNotice(text.toHtmlEscaped()); setMode(Conversation);
+#endif
+  }
   OscarClient *client_ = nullptr;
   TextEditor recipient_;
   TextEditor compose_;
   Transcript transcript_;
-  QString pendingRecipient_;
-  QString pendingText_;
-  QString status_;
-  QString attemptError_;
-  int focus_ = 1;
-  bool sending_ = false;
-  bool sendAttempt_ = false;
-  bool pressedSend_ = false;
+  PaintedMenuBar menu_;
+  std::shared_ptr<CtlObject> group_;
+  QVector<QRect> menuRects_;
+  QRect historyRect_, composeRect_;
+  Mode mode_ = NewMessage;
+  QString pendingRecipient_, pendingText_, attemptError_;
+  int focus_ = 1, hoveredMenu_ = -1, openMenu_ = -1, splitterY_ = -1;
+  quint32 hovered_ = 0, pressed_ = 0;
+  bool sending_ = false, sendAttempt_ = false, draggingSplitter_ = false;
 };
 }
 
@@ -172,12 +430,14 @@ struct MessagingWindows::State {
     QObject::connect(client, &OscarClient::loginStageChanged, owner, [this](int stage) { if (stage == 0) resetPending(); });
   }
   MessageWindow *open(const QString &recipient) {
-    const QString key = normalizedName(recipient); if (byRecipient.contains(key) && byRecipient.value(key)) { MessageWindow *window = byRecipient.value(key); window->showWindow(); return window; }
-    auto *window = new MessageWindow(client, transientParent, owner, recipient); byRecipient.insert(key, window); windows.append(window);
-    window->recipientChanged = [this, window](const QString &name) { for (auto it = byRecipient.begin(); it != byRecipient.end();) { if (it.value() == window) it = byRecipient.erase(it); else ++it; } byRecipient.insert(normalizedName(name), window); };
+    // One window per buddy (0x1138d434).
+    const QString key = normalizedName(recipient); if (!key.isEmpty() && byRecipient.contains(key) && byRecipient.value(key)) { MessageWindow *window = byRecipient.value(key); window->showWindow(); return window; }
+    int cascade = 0; for (const auto &window : windows) if (window) ++cascade;
+    auto *window = new MessageWindow(client, transientParent, owner, recipient, cascade); if (!key.isEmpty()) byRecipient.insert(key, window); windows.append(window);
+    window->recipientChanged = [this, window](const QString &name) { for (auto it = byRecipient.begin(); it != byRecipient.end();) { if (it.value() == window) it = byRecipient.erase(it); else ++it; } if (!name.isEmpty()) byRecipient.insert(normalizedName(name), window); };
     window->sendStarted = [this](MessageWindow *surface) { activeAttempt = surface; };
     window->sendFinished = [this](MessageWindow *surface) { if (activeAttempt == surface) activeAttempt.clear(); };
-    QObject::connect(window, &QObject::destroyed, owner, [this, window] { for (auto it = byRecipient.begin(); it != byRecipient.end();) { if (it.value().isNull() || it.value().data() == window) it = byRecipient.erase(it); else ++it; } if (activeAttempt.data() == window) activeAttempt.clear(); });
+    QObject::connect(window, &QObject::destroyed, owner, [this, window] { for (auto it = byRecipient.begin(); it != byRecipient.end();) { if (it.value().isNull() || it.value().data() == window) it = byRecipient.erase(it); else ++it; } windows.removeIf([window](const QPointer<MessageWindow> &value) { return value.isNull() || value.data() == window; }); if (activeAttempt.data() == window) activeAttempt.clear(); });
     window->showWindow(); return window;
   }
   void resetPending(const QString &reason = QString()) { for (const auto &window : windows) if (window) window->resetPending(reason); activeAttempt.clear(); }
