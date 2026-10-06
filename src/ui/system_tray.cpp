@@ -1,4 +1,5 @@
 #include "system_tray.h"
+#include "menu_template.h"
 #include <QCoreApplication>
 #include <QDebug>
 #include <functional>
@@ -71,15 +72,10 @@ void SystemTray::registerIcon() {
   icon_.uVersion = NOTIFYICON_VERSION_4; version4_ = Shell_NotifyIconW(NIM_SETVERSION, &icon_) != FALSE;
 }
 void SystemTray::popup(int x, int y) {
-  if (actions_.isEmpty()) return;
-  HMENU menu = CreatePopupMenu(); if (!menu) return;
-  const QList<Action> actions = actions_;
-  std::function<void(HMENU,const QList<Action>&)> append=[&](HMENU target,const QList<Action>&items){for(const Action &action:items){if(action.text.isEmpty())AppendMenuW(target,MF_SEPARATOR,0,nullptr);else if(!action.children.isEmpty()){HMENU submenu=CreatePopupMenu();append(submenu,action.children);AppendMenuW(target,MF_POPUP|MF_STRING|(action.enabled?MF_ENABLED:MF_GRAYED),reinterpret_cast<UINT_PTR>(submenu),reinterpret_cast<LPCWSTR>(action.text.utf16()));}else AppendMenuW(target,MF_STRING|(action.enabled?MF_ENABLED:MF_GRAYED),UINT_PTR(action.id),reinterpret_cast<LPCWSTR>(action.text.utf16()));}};
-  append(menu,actions);
+  if (actions_.isEmpty() || !callbackWindow_) return;
+  std::function<QList<MenuItem>(const QList<Action> &)> convert = [&](const QList<Action> &actions) { QList<MenuItem> items; for (const Action &action : actions) { MenuItem item; item.text = action.text; item.id = action.id; item.grayed = !action.enabled; item.children = convert(action.children); items.append(item); } return items; };
   if (x == -1 && y == -1) { POINT position{}; GetCursorPos(&position); x = position.x; y = position.y; }
-  SetForegroundWindow(icon_.hWnd);
-  UINT selected = TrackPopupMenuEx(menu, TPM_RETURNCMD | TPM_NONOTIFY | TPM_RIGHTBUTTON, x, y, icon_.hWnd, nullptr);
-  PostMessageW(icon_.hWnd, WM_NULL, 0, 0); DestroyMenu(menu);
-  if (selected) emit triggered(int(selected));
+  const int selected = popupMenu(callbackWindow_, convert(actions_), QPoint(x, y));
+  if (selected) emit triggered(selected);
 }
 #endif
