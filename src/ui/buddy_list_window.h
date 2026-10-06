@@ -2,6 +2,9 @@
 #include "window_base.h"
 #include "menu_template.h"
 #include "../oscar/client.h"
+#include "text_editor.h"
+#include <functional>
+#include <optional>
 #include <QImage>
 #include <QPointer>
 #include <QSettings>
@@ -20,6 +23,9 @@ public:
   ~BuddyListWindow() override;
   static constexpr int AwaySavedBase = 24100; // + index of a saved away message (Away Message submenu)
   void requestExit();
+  static void showAbout(QWindow *owner);              // Help > About (RT_DIALOG 111)
+  static void showHelp(QWindow *owner, int command);  // 158 / 156 / 705 WinHelp entries
+  static void runHelpCommand(QWindow *owner, const QString &screenName, int command); // 158/156/705/159/902/160
 signals:
   void exitAccepted();
   void actionRequested(int id, const QString &screenName);
@@ -33,8 +39,31 @@ protected:
   void contentKeyPress(QKeyEvent *event) override;
   void wheelEvent(QWheelEvent *event) override;
   void closeRequested() override;
+  bool event(QEvent *event) override;
 private:
-  struct Row { QRect rect; quint16 groupId; quint16 itemId; QString name; bool group; };
+  struct Row { QRect rect; quint16 groupId; quint16 itemId; QString name; bool group; bool pending = false; };
+  // List Setup in-place label editing (oscarui _Oscar_Tree editor, Research/remaining_buttons.md 1.4-1.5).
+  enum class EditResult { Accept, Reject, Delete };
+  struct LabelEdit { bool group = false, pending = false; quint16 groupId = 0, itemId = 0; QString original; int maxLength = 32; std::unique_ptr<TextEditor> editor; };
+  struct PendingBuddy { quint16 groupId = 0, afterItemId = 0; }; // *New Buddy* row: nothing is sent until it is named
+  void addBuddy();
+  void addGroup();
+  void deleteSelection();
+  void editName();
+  void showContextMenu(const QPoint &point);
+  void showNetFindMenu();
+  bool requireOnline();
+  bool validateList();
+  void scheduleEdit(int delay);
+  void beginEdit(const QString &initial = {}, bool typed = false);
+  void endEdit(bool commit, bool interactive);
+  EditResult checkGroup(QString &text, bool interactive);
+  EditResult checkBuddy(QString &text, bool interactive);
+  void rosterEdit(std::function<void()> change);
+  bool hasRealGroup() const;
+  void selectRow(quint16 groupId, quint16 itemId, bool group, const QString &name, bool pending = false);
+  void showPage(bool listSetup);
+  void paintEditor(QPainter &painter, const QRect &rect);
   QRect client() const;
   void layout();
   QVector<QRect> menuRects() const;
@@ -60,7 +89,14 @@ private:
   QVector<Row> rows_;
   QSet<quint16> collapsedGroups_;
   quint16 selectedGroupId_ = 0, selectedItemId_ = 0;
-  bool selectedGroup_ = false;
+  bool selectedGroup_ = false, selectedPending_ = false;
+  std::optional<PendingBuddy> pendingBuddy_;
+  std::unique_ptr<LabelEdit> edit_;
+  QRect editRect_;
+  QTimer editTimer_;
+  bool committing_ = false, pressedOnSelection_ = false;
+  QList<std::function<void()>> rosterQueue_;
+  quint16 editGroupAfterRoster_ = 0;
   int treeScroll_ = 0;
   QRect treeArea_;
   QList<MenuItem> menuBar_;

@@ -31,6 +31,7 @@ public:
   bool removeGroup(quint16 groupId);
   bool addBuddy(quint16 groupId, const QString &name);
   bool blockUser(const QString &name);            // adds a deny (class 3) feedbag item
+  bool unblockUser(const QString &name);          // removes the deny item
   bool isBlocked(const QString &name) const;
   bool warnUser(const QString &name, bool anonymous);
   bool renameBuddy(quint16 groupId, quint16 itemId, const QString &name);

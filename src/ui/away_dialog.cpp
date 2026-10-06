@@ -1,4 +1,6 @@
 #include "away_dialog.h"
+#include <algorithm>
+#include "ctl_group.h"
 #include "native_dialog.h"
 #include "../oscar/client.h"
 #include <QSettings>
@@ -81,11 +83,20 @@ void AwayMessages::newMessage() {
 #endif
 }
 
+QList<QPair<QString, QString>> AwayMessages::menuMessages() {
+  auto split = [](const QString &stored) { const int open = stored.indexOf(QStringLiteral("<title>"), 0, Qt::CaseInsensitive), close = stored.indexOf(QStringLiteral("</title>"), 0, Qt::CaseInsensitive); if (open < 0 || close < open) return qMakePair(stored, stored); return qMakePair(stored.mid(open + 7, close - open - 7), stored.mid(close + 8)); }; // SplitOutAwayLabel
+  QList<QPair<QString, QString>> result;
+  for (const QVariant &value : QSettings().value(ItemsKey).toList()) { const QVariantMap item = value.toMap(); result.append({item.value(QStringLiteral("label")).toString(), item.value(QStringLiteral("418")).toString()}); }
+  if (result.isEmpty()) result.append(split(aimEnvironment().string(281)));
+  const auto game = split(aimEnvironment().string(910));
+  if (std::none_of(result.begin(), result.end(), [&](const auto &m) { return m.first.compare(game.first, Qt::CaseInsensitive) == 0; })) result.append(game);
+  return result;
+}
 void AwayMessages::useSaved(int index) {
   if (!client_ || !client_->connected()) return;
-  const QVariantList items = QSettings().value(ItemsKey).toList(); if (index < 0 || index >= items.size()) return;
-  const QVariantMap item = items[index].toMap(); const QString text = item.value(QStringLiteral("418")).toString();
-  if (!text.trimmed().isEmpty() && client_->setAway(text)) showCurrent(item.value(QStringLiteral("label")).toString(), text);
+  const auto messages = menuMessages(); if (index < 0 || index >= messages.size()) return;
+  const auto &[label, text] = messages[index];
+  if (!text.trimmed().isEmpty() && client_->setAway(text)) showCurrent(label, text); // set immediately, no dialog (AwayProc n >= 1)
 }
 
 void AwayMessages::showCurrent(const QString &label, const QString &text) {

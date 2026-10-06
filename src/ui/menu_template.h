@@ -23,4 +23,4 @@ QList<MenuItem> parseMenuTemplate(const QByteArray &data);
 QList<MenuItem> loadMenuResource(int id);
 
 // Shows a popup at a global position and returns the selected command id, or 0.
-int popupMenu(QWindow *owner, const QList<MenuItem> &items, const QPoint &globalPosition, const QList<int> &disabledIds = {});
+int popupMenu(QWindow *owner, const QList<MenuItem> &items, const QPoint &globalPosition, const QList<int> &disabledIds = {}, bool bottomAlign = false);

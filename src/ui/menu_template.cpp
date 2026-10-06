@@ -101,7 +101,7 @@ private:
 }
 #endif
 
-int popupMenu(QWindow *owner, const QList<MenuItem> &items, const QPoint &globalPosition, const QList<int> &disabledIds) {
+int popupMenu(QWindow *owner, const QList<MenuItem> &items, const QPoint &globalPosition, const QList<int> &disabledIds, bool bottomAlign) {
 #ifdef Q_OS_WIN
   if (!owner || items.isEmpty()) return 0;
   HWND window = reinterpret_cast<HWND>(owner->winId());
@@ -121,7 +121,7 @@ int popupMenu(QWindow *owner, const QList<MenuItem> &items, const QPoint &global
   HMENU menu = build(items);
   OwnerDraw ownerDraw(window);
   SetForegroundWindow(window); // a menu owned by a background window does not track or dismiss correctly
-  const int selected = int(TrackPopupMenuEx(menu, TPM_RETURNCMD | TPM_NONOTIFY | TPM_LEFTALIGN | TPM_TOPALIGN | TPM_RIGHTBUTTON, globalPosition.x(), globalPosition.y(), window, nullptr));
+  const int selected = int(TrackPopupMenuEx(menu, TPM_RETURNCMD | TPM_NONOTIFY | TPM_LEFTALIGN | (bottomAlign ? TPM_BOTTOMALIGN : TPM_TOPALIGN) | TPM_RIGHTBUTTON, globalPosition.x(), globalPosition.y(), window, nullptr));
   PostMessageW(window, WM_NULL, 0, 0);
   DestroyMenu(menu);
   return selected;

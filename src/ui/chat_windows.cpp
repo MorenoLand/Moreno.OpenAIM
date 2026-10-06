@@ -1,4 +1,5 @@
 #include "chat_windows.h"
+#include "ate_link.h"
 #include "art.h"
 #include "buddy_info_window.h"
 #include "ctl_window.h"
@@ -152,8 +153,8 @@ private:
     if (!controlEnabled(Send)) return;
     TextEditor &compose = editor(Compose); QString text = compose.document.toPlainText();
     if (text.size() > 8000) { errorBox(this, formatAimString(aimString(1886), {QString::number(text.size()), QStringLiteral("8000")})); return; }
-    if (!manager_->client()->sendChatMessage(room_.cookie, text.toHtmlEscaped().replace(QLatin1Char('\n'), QStringLiteral("<br>")))) { errorBox(this, aimString(1594)); return; }
-    compose.clear(); playAimSound(AimSound::ChatSend); requestUpdate(); // shown when the server reflects it
+    if (!manager_->client()->sendChatMessage(room_.cookie, ate::html(compose.document))){ errorBox(this, aimString(1594)); return; }
+    compose.clear(); compose.cursor.setCharFormat(QTextCharFormat()); playAimSound(AimSound::ChatSend); requestUpdate(); // shown when the server reflects it
   }
   ChatWindows *manager_;
   QString name_, message_;

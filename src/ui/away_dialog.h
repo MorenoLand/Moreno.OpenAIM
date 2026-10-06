@@ -1,4 +1,6 @@
 #pragma once
+#include <QPair>
+#include <QList>
 #include <QObject>
 #include <QPointer>
 
@@ -13,7 +15,10 @@ public:
   AwayMessages(OscarClient *client, QWindow *owner, QObject *parent = nullptr);
   ~AwayMessages() override;
   void newMessage();
-  void useSaved(int index); // Away Message submenu entry for a saved message
+  void useSaved(int index); // Away Message submenu entry (index into menuMessages())
+  // CreateAwayMenu entries after "New Message...": the stored messages (STRING 281 default when none) and the
+  // built-in STRING 910 "Playing Game" unless a stored label equals it. Pairs of label and text.
+  static QList<QPair<QString, QString>> menuMessages();
 private:
   void showCurrent(const QString &label, const QString &text);
   void closeCurrent();

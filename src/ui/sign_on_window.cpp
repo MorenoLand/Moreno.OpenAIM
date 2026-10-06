@@ -1,4 +1,5 @@
 #include "sign_on_window.h"
+#include "ate_link.h"
 #include "buddy_list_window.h"
 #include "preferences_window.h"
 #include "art.h"
@@ -73,7 +74,7 @@ SignOnWindow::SignOnWindow(OscarClient *client) : WindowBase(QStringLiteral("Sig
   connect(client_, &OscarClient::statusChanged, this, [this](const QString &status) { status_ = status; renderNow(); });
   connect(client_, &OscarClient::failed, this, [this](const QString &reason) { setLoginStage(0);status_ = reason; renderNow(); });
   connect(client_, &OscarClient::loginStageChanged, this, &SignOnWindow::setLoginStage);
-  connect(client_, &OscarClient::rosterReady, this, [this] { if (savePassword_) storeSavedPassword(settings_, screenName_, password_); else { forgetSavedPassword(settings_, screenName_); password_.fill(QChar(0)); password_.clear(); } if(preferencesWindow_)preferencesWindow_->close(); if(buddyWindow_)buddyWindow_->deleteLater();buddyWindow_ = new BuddyListWindow(client_);buddyWindow_->QObject::setParent(this); /* top-level and unowned like the original, so it appears in the taskbar */connect(buddyWindow_,&BuddyListWindow::actionRequested,this,[this](int id,const QString &name){if(id==20002||id==174)showPreferences();else if(id==745)signOffFromTray();else emit actionRequested(id,name);}); connect(buddyWindow_,&BuddyListWindow::exitAccepted,qApp,&QCoreApplication::quit); buddyWindow_->show(); hide(); });
+  connect(client_, &OscarClient::rosterReady, this, [this] { if (savePassword_) storeSavedPassword(settings_, screenName_, password_); else { forgetSavedPassword(settings_, screenName_); password_.fill(QChar(0)); password_.clear(); } if(preferencesWindow_)preferencesWindow_->close(); if(buddyWindow_)buddyWindow_->deleteLater();buddyWindow_ = new BuddyListWindow(client_);buddyWindow_->QObject::setParent(this); /* top-level and unowned like the original, so it appears in the taskbar */connect(buddyWindow_,&BuddyListWindow::actionRequested,this,[this](int id,const QString &name){if(id==20002||id==174)showPreferences();else if(id==745||id==190)signOffFromTray(); /* Sign Off / Switch Screen Name: back to the Sign On window */else emit actionRequested(id,name);}); connect(buddyWindow_,&BuddyListWindow::exitAccepted,qApp,&QCoreApplication::quit); buddyWindow_->show(); hide(); });
   if (QScreen *screen = QGuiApplication::primaryScreen()) setPosition(screen->availableGeometry().center() - QPoint(width() / 2, height() / 2));
 }
 void SignOnWindow::showClient() { QWindow *target=buddyWindow_&&client_->connected()?static_cast<QWindow*>(buddyWindow_.data()):this;target->showNormal();target->raise();target->requestActivate();target->requestUpdate(); }
@@ -253,7 +254,7 @@ void SignOnWindow::contentMousePress(const QPoint &point, Qt::MouseButton button
   if (button != Qt::LeftButton) return;
   if (loginStage_) { if (formRect(193, true).contains(point)) cancelSignOn(); return; }
   if (const int action = actionAt(point); action >= 1 && action <= 3) { pressedAction_ = hoveredAction_ = action; renderNow(); return; }
-  if (actionAt(point) == 4) { status_ = QStringLiteral("Password recovery is unavailable"); renderNow(); return; }
+  if (actionAt(point) == 4) { ate::openUrl(aimEnvironment().string(1315)); return; } // Forgot Password? (osclogin 0x11102a1e, on mouse down)
 #ifndef Q_OS_WIN
   if (formRect(958).contains(point)) nameActive_ = true;
   else if (formRect(959).contains(point)) nameActive_ = false;
@@ -272,7 +273,13 @@ void SignOnWindow::contentMouseRelease(const QPoint &point, Qt::MouseButton butt
   if (button != Qt::LeftButton || !pressedAction_) return;
   const int action = pressedAction_; pressedAction_ = 0; renderNow();
   if (actionAt(point) != action) return;
-  if (action == 1) { status_ = QStringLiteral("AIM Help is unavailable"); renderNow(); }
+  if (action == 1) {
+#ifdef Q_OS_WIN
+    // o_ShowHelp(hwnd, 1, 0x212): WinHelp HELP_CONTEXT topic 530 of aim95.hlp (osclogin 0x1110225f).
+    const std::wstring file = (QCoreApplication::applicationDirPath() + QLatin1Char('/') + aimEnvironment().string(182)).toStdWString();
+    WinHelpW(reinterpret_cast<HWND>(winId()), file.c_str(), HELP_CONTEXT, 530);
+#endif
+  }
   else if (action == 2) showPreferences();
   else if (action == 3) signOn();
 }void SignOnWindow::contentKeyPress(QKeyEvent *event) {
