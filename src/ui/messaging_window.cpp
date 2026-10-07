@@ -76,10 +76,10 @@ public:
     if (!first_) cursor.insertBlock();
     cursor.insertHtml(QStringLiteral("<font color=%1><b>%2</b>%3%4</font>&nbsp;").arg(color, name.toHtmlEscaped(), stamp.toHtmlEscaped(), separator));
     const int start = cursor.position();
-    cursor.insertHtml(body); first_ = false; followBottom = true;
+    ate::insertMessageHtml(cursor, body, QColor(Qt::white)); first_ = false; followBottom = true;
     ate::insertSmileys(document, start);
   }
-  void appendNotice(const QString &html) { QTextCursor cursor(&document); cursor.movePosition(QTextCursor::End); if (!first_) cursor.insertBlock(); cursor.insertHtml(QStringLiteral("<hr>") + html); first_ = false; followBottom = true; }
+  void appendNotice(const QString &html) { QTextCursor cursor(&document); cursor.movePosition(QTextCursor::End); if (!first_) cursor.insertBlock(); ate::insertMessageHtml(cursor, QStringLiteral("<hr>") + html, QColor(Qt::white)); first_ = false; followBottom = true; }
   QTextDocument document;
   qreal scroll = 0;
   bool followBottom = true;
