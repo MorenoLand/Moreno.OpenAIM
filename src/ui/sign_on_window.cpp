@@ -134,8 +134,9 @@ void SignOnWindow::stopReconnect(bool showSignOn) {
 void SignOnWindow::applyStartup() {
 #ifdef Q_OS_WIN
   QSettings run(QStringLiteral("HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Run"), QSettings::NativeFormat);
-  if (settings_.value(QStringLiteral("account/startWithWindows"), false).toBool()) run.setValue(QStringLiteral("OpenAIM"), QStringLiteral("\"%1\"").arg(QDir::toNativeSeparators(QCoreApplication::applicationFilePath())));
-  else run.remove(QStringLiteral("OpenAIM"));
+  const QString applicationName=QCoreApplication::applicationName();QString command=QStringLiteral("\"%1\"").arg(QDir::toNativeSeparators(QCoreApplication::applicationFilePath()));if(applicationName.startsWith(QStringLiteral("OpenAIM-")))command+=QStringLiteral(" \"--profile=%1\"").arg(QString(applicationName.mid(8)).replace(QLatin1Char('"'),QStringLiteral("\\\"")));
+  if (settings_.value(QStringLiteral("account/startWithWindows"), false).toBool()) run.setValue(applicationName,command);
+  else run.remove(applicationName);
 #endif
 }
 void SignOnWindow::exitFromTray() { if(buddyWindow_&&client_->connected()){buddyWindow_->show();buddyWindow_->requestExit();}else{

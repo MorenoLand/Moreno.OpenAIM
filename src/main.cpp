@@ -18,11 +18,12 @@
 #include <memory>
 
 int main(int argc, char **argv) {
+  QString applicationName=QStringLiteral("OpenAIM");for(int i=1;i<argc;++i){const QString argument=QString::fromLocal8Bit(argv[i]);if(argument.startsWith(QStringLiteral("--profile=")))applicationName=QStringLiteral("OpenAIM-")+argument.mid(10);}
+  QGuiApplication::setOrganizationName(QStringLiteral("MorenoLand"));
+  QGuiApplication::setApplicationName(applicationName);
   QGuiApplication app(argc, argv);
   QGuiApplication::styleHints()->setColorScheme(Qt::ColorScheme::Light); // the classic AIM look has no dark variant
   QGuiApplication::setQuitOnLastWindowClosed(false);
-  QGuiApplication::setOrganizationName(QStringLiteral("MorenoLand"));
-  QGuiApplication::setApplicationName(QStringLiteral("OpenAIM"));
   OscarClient client;
   installSoundDefaults(); setSoundClient(&client);
   // Buddy arrival/departure sounds; the presence burst right after sign-on is not announced (inferred: the original stays quiet at sign-on).
