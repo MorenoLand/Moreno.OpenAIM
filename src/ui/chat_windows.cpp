@@ -119,6 +119,7 @@ protected:
     case Send: send(); return;
     case 2: closeRequested(); return;
     case Im: case 490: if (!selected.isEmpty()) manager_->action()(139, selected); return;
+    case Talk: if (!selected.isEmpty() && normalized(selected) != normalized(manager_->client()->screenName())) manager_->action()(18, selected); return;
     case Info: case 491: if (!selected.isEmpty()) manager_->action()(138, selected); return;
     case 674: if (!selected.isEmpty()) userActions::addBuddy(this, manager_->client(), selected); return;
     case Ignore: case 564: if (!selected.isEmpty() && normalized(selected) != normalized(manager_->client()->screenName())) { if (ignored_.contains(normalized(selected))) ignored_.remove(normalized(selected)); else ignored_.insert(normalized(selected)); requestUpdate(); } return;

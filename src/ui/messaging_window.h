@@ -13,6 +13,7 @@ public:
   void openMessage(const QString &recipient = QString());
   void previewConversation(); // developer preview (--ui-preview=im-conversation)
   void setChatHandler(std::function<void(const QString &)> handler); // IM window &Chat / People > Send Chat Invitation
+  void setTalkHandler(std::function<void(const QString &)> handler);
 private:
   struct State;
   std::unique_ptr<State> state_;

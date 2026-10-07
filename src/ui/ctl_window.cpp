@@ -78,6 +78,7 @@ void CtlWindow::paintContent(QPainter &p) {
 
 void CtlWindow::paintObject(QPainter &p, CtlObject &o) {
   if (!o.shown()) return;
+  if (paintCustom(p, o)) return;
   const QRect r = o.windowRect();
   switch (o.kind) {
   case CtlObject::Kind::Group: case CtlObject::Kind::TabGroup:

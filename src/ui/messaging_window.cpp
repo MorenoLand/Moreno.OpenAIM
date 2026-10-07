@@ -127,6 +127,7 @@ public:
   std::function<void(MessageWindow *)> sendFinished;
   std::function<void(const QString &)> openMessage;
   std::function<void(const QString &)> inviteToChat;
+  std::function<void(const QString &)> startTalk;     // Talk button (0x12) / People > Connect to Talk (18)
   std::function<void(MessageWindow *)> connectImage; // People > Connect to Send IM Image (818) / toolbar cell
   std::function<void(MessageWindow *)> closeImage;   // People > Close IM Image Connection (819)
   void setDirect(DirectConnection *connection) {
@@ -464,6 +465,7 @@ private:
     case AddBuddy: case 670: userActions::addBuddy(this, client_, recipient()); return;  // Add Buddy button / People > Add to Buddy List...
     case GetInfo: case 669: BuddyInfoWindow::open(client_, recipient(), [this](int, const QString &name) { if (openMessage) openMessage(name); }); return; // Get Info button / People > Info...
     case 665: if (inviteToChat) inviteToChat(recipient()); return;                       // People > Send Chat Invitation... / &Chat
+    case Talk: if (startTalk && !recipient().isEmpty()) startTalk(recipient()); return; // Talk button / People > Connect to Talk
     case 818: if (connectImage) connectImage(this); return;            // People > Connect to Send IM Image
     case 819: if (closeImage) closeImage(this); return;                 // People > Close IM Image Connection
     case 1104: if (directConnected() && ate::insertPicture(this, compose_.cursor)) { focus_ = 1; edited(); } return; // Insert > Image or Sound File (only while connected)
@@ -543,6 +545,7 @@ struct MessagingWindows::State {
   QList<QPointer<MessageWindow>> windows;
   QPointer<MessageWindow> activeAttempt;
   std::function<void(const QString &)> chatHandler;
+  std::function<void(const QString &)> talkHandler;
   State(MessagingWindows *ownerValue, OscarClient *clientValue, QWindow *parentValue) : owner(ownerValue), client(clientValue), transientParent(parentValue) {
     if (!client) return;
     QObject::connect(client, &OscarClient::messageReceived, owner, [this](const QString &sender, const QString &text, bool autoResponse) {
@@ -578,6 +581,7 @@ struct MessagingWindows::State {
     window->openMessage = [this](const QString &name) { open(name); };
     window->inviteToChat = [this](const QString &name) { if (chatHandler) chatHandler(name); };
     window->connectImage = [this](MessageWindow *surface) { startImage(surface); };
+    window->startTalk = [this](const QString &name) { if (talkHandler) talkHandler(name); };
     window->closeImage = [this](MessageWindow *surface) { closeImageFor(surface->recipient(), true); };
     if (DirectSession *session = images.value(key)) if (session->connection && session->connection->isConnected()) window->setDirect(session->connection);
     QObject::connect(window, &QObject::destroyed, owner, [this, window] { for (auto it = byRecipient.begin(); it != byRecipient.end();) { if (it.value().isNull() || it.value().data() == window) it = byRecipient.erase(it); else ++it; } windows.removeIf([window](const QPointer<MessageWindow> &value) { return value.isNull() || value.data() == window; }); if (activeAttempt.data() == window) activeAttempt.clear(); });
@@ -762,4 +766,5 @@ MessagingWindows::MessagingWindows(OscarClient *client, QWindow *owner, QObject 
 MessagingWindows::~MessagingWindows() { if (state_) state_->shutdown(); }
 void MessagingWindows::openMessage(const QString &recipient) { if (state_) state_->open(recipient); }
 void MessagingWindows::setChatHandler(std::function<void(const QString &)> handler) { if (state_) state_->chatHandler = std::move(handler); }
+void MessagingWindows::setTalkHandler(std::function<void(const QString &)> handler) { if (state_) state_->talkHandler = std::move(handler); }
 void MessagingWindows::previewConversation() { if (state_) state_->open(QStringLiteral("edward"))->preview(); }

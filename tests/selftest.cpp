@@ -3,6 +3,8 @@
 // Credentials are read at runtime from a "screenname<TAB>password" file and never printed.
 #include "client.h"
 #include "direct_connection.h"
+#include "talk_call.h"
+#include <cmath>
 #include <QCoreApplication>
 #include <QElapsedTimer>
 #include <QFile>
@@ -294,6 +296,33 @@ void scenarioDirectIm(Recorder &a, Recorder &b) {
   listener.close(); acceptor.close();
 }
 
+// Talk engine on this machine: callee listens, caller connects (case 1), 18-byte handshake, UDP probe, Rtv audio
+// both ways, half-duplex control frames, hang up.
+void scenarioTalkLoopback() {
+  const quint64 cookie = 0xA1B2C3D4E5F60718ULL;
+  TalkCall callee(cookie, TalkCall::Role::Callee, false), caller(cookie, TalkCall::Role::Caller, false);
+  const quint16 port = callee.listen(); check("talk callee listener", port >= 1112 && port <= 3333, QStringLiteral("port %1").arg(port));
+  bool c1 = false, c2 = false; int heardByCallee = 0, heardByCaller = 0; bool calleeEnded = false;
+  QObject::connect(&caller, &TalkCall::connected, &caller, [&] { c1 = true; });
+  QObject::connect(&callee, &TalkCall::connected, &callee, [&] { c2 = true; });
+  QObject::connect(&callee, &TalkCall::audioReceived, &callee, [&](int n) { heardByCallee += n; });
+  QObject::connect(&caller, &TalkCall::audioReceived, &caller, [&](int n) { heardByCaller += n; });
+  QObject::connect(&callee, &TalkCall::ended, &callee, [&](bool) { calleeEnded = true; });
+  caller.listen(); caller.connectTo(QHostAddress(QHostAddress::LocalHost), port);
+  check("talk connected (handshake + media negotiation)", waitFor([&] { return c1 && c2; }, 15000), QStringLiteral("caller %1 callee %2").arg(c1).arg(c2));
+  if (!c1 || !c2) return;
+  // Drive the encoders directly with a synthetic vowel-like signal (no microphone needed).
+  QByteArray pcm(TalkAudio::ChunkBytes, 0); auto *s = reinterpret_cast<qint16 *>(pcm.data());
+  for (int i = 0; i < TalkAudio::ChunkSamples; ++i) s[i] = qint16(6000 * std::sin(i * 0.12) + 3000 * std::sin(i * 0.37));
+  caller.startSending(); callee.startSending(); settle(300);
+  for (int i = 0; i < 4; ++i) { emit caller.audio().captured(pcm); emit callee.audio().captured(pcm); settle(50); }
+  check("talk audio caller->callee decoded", waitFor([&] { return heardByCallee >= 4 * 1440; }, 5000), QStringLiteral("%1 samples").arg(heardByCallee));
+  check("talk audio callee->caller decoded", waitFor([&] { return heardByCaller >= 4 * 1440; }, 5000), QStringLiteral("%1 samples").arg(heardByCaller));
+  caller.setHold(true); check("talk hold seen by peer", waitFor([&] { return callee.remotePaused(); }, 3000), "no HOLD");
+  caller.setHold(false); check("talk resume seen by peer", waitFor([&] { return !callee.remotePaused(); }, 3000), "no RESUME");
+  caller.hangUp(); check("talk hang up seen by peer", waitFor([&] { return calleeEnded; }, 3000), "no BYE");
+}
+
 void scenarioSignOff(Recorder &a, Recorder &b) {
   a.client.signOff();
   b.client.signOff();
@@ -309,6 +338,7 @@ void scenarioSignOff(Recorder &a, Recorder &b) {
 
 int main(int argc, char **argv) {
   QCoreApplication app(argc, argv);
+  if (argc > 1 && QString::fromLocal8Bit(argv[1]) == QStringLiteral("--talk")) { scenarioTalkLoopback(); out << "SUMMARY failures=" << failures << Qt::endl; return failures; }
   const QString path = argc > 1 ? QString::fromLocal8Bit(argv[1]) : QString::fromLatin1(kDefaultAccounts);
   const QString user1 = QStringLiteral("openaimtest1"), user2 = QStringLiteral("openaimtest2");
   QString pass1, pass2;
@@ -329,6 +359,7 @@ int main(int argc, char **argv) {
     scenarioChat(a, b);
     scenarioBuddies(a, b);
     scenarioDirectIm(a, b);
+    scenarioTalkLoopback();
   }
   scenarioSignOff(a, b);
   out << "SUMMARY failures=" << failures << Qt::endl;

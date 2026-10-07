@@ -42,6 +42,7 @@ protected:
   virtual bool submitEditor(quint32 id) { Q_UNUSED(id); return false; } // Enter in a control; true = consumed
   virtual void editorChanged(quint32 id) { Q_UNUSED(id); }
   virtual void toolbarCommand(quint32 ateId, int command);
+  virtual bool paintCustom(QPainter &painter, const CtlObject &object) { Q_UNUSED(painter); Q_UNUSED(object); return false; } // true = drawn by the subclass
   virtual bool isComposePane(quint32 id) const { Q_UNUSED(id); return false; } // follows Preferences > IM/Chat composing defaults
   virtual qreal documentZoom(quint32 id) const { Q_UNUSED(id); return 1.0; }  // Text Magnification for history panes
   virtual void menuCommand(int id) { command(id); }

@@ -57,7 +57,18 @@ set(AIM_SOURCES
   src/ui/user_actions.cpp
   src/ui/ate_link.cpp
   src/ui/preferences.cpp
+  src/ui/talk_window.cpp
+  src/ui/talk_window.h
   src/oscar/direct_connection.cpp
+  src/talk/talk_call.cpp
+  src/talk/talk_call.h
+  src/talk/talk_audio.cpp
+  src/talk/talk_audio.h
+  src/talk/rtv_codec.cpp
+  src/talk/rtv_codec.h
+  src/talk/rtv_encoder.cpp
+  src/talk/rtv_framing.cpp
+  src/talk/rtv_internal.h
   src/oscar/direct_connection.h
   src/ui/auto_responder.cpp
   src/ui/auto_responder.h
@@ -137,7 +148,11 @@ endif()
 
 option(AIM_BUILD_SELFTEST "Build the OSCAR self-test" OFF)
 if(AIM_BUILD_SELFTEST)
-  add_executable(openaim_selftest tests/selftest.cpp src/oscar/protocol.cpp src/oscar/protocol.h src/oscar/client.cpp src/oscar/client.h src/oscar/direct_connection.cpp src/oscar/direct_connection.h)
+  add_executable(openaim_selftest tests/selftest.cpp src/oscar/protocol.cpp src/oscar/protocol.h src/oscar/client.cpp src/oscar/client.h src/oscar/direct_connection.cpp src/oscar/direct_connection.h src/talk/talk_call.cpp src/talk/talk_call.h src/talk/talk_audio.cpp src/talk/talk_audio.h src/talk/rtv_codec.cpp src/talk/rtv_encoder.cpp src/talk/rtv_framing.cpp)
+  target_include_directories(openaim_selftest PRIVATE src/oscar src/talk)
+  if(WIN32)
+    target_link_libraries(openaim_selftest PRIVATE winmm)
+  endif()
   target_include_directories(openaim_selftest PRIVATE src/oscar)
   target_link_libraries(openaim_selftest PRIVATE Qt6::Core Qt6::Network)
   if(MSVC)

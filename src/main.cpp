@@ -8,6 +8,7 @@
 #include "ui/user_actions.h"
 #include "ui/chat_windows.h"
 #include "ui/auto_responder.h"
+#include "ui/talk_window.h"
 #include "ui/preferences.h"
 #include <QElapsedTimer>
 #include "ui/buddy_list_window.h"
@@ -33,12 +34,15 @@ int main(int argc, char **argv) {
   AwayMessages away(&client,&window);
   AutoResponder autoResponder(&client);
   QObject::connect(&client,&OscarClient::rosterChanged,&client,[&]{prefs::privacyFromServer(&client);}); // Privacy page shows the server lists
-  ChatWindows chats(&client,[&](int id,const QString &who){if(id==139)messaging.openMessage(who);else if(id==138)BuddyInfoWindow::open(&client,who,[&](int,const QString &n){messaging.openMessage(n);});});
+  TalkSessions talk(&client,[&](const QString &who){messaging.openMessage(who);});
+  ChatWindows chats(&client,[&](int id,const QString &who){if(id==18)talk.start(who);else if(id==139)messaging.openMessage(who);else if(id==138)BuddyInfoWindow::open(&client,who,[&](int,const QString &n){messaging.openMessage(n);});});
+  messaging.setTalkHandler([&](const QString &who){talk.start(who);});
   messaging.setChatHandler([&](const QString &who){chats.invite(who.isEmpty()?QStringList():QStringList{who});});
-  QObject::connect(&window,&SignOnWindow::actionRequested,&messaging,[&](int id,const QString &name){auto openIm=[&](int,const QString &who){messaging.openMessage(who);};if(id==139)messaging.openMessage(name);else if(id==138)BuddyInfoWindow::open(&client,name,openIm);else if(id==390)userActions::block(nullptr,&client,name);else if(id==561)chats.invite(name.isEmpty()?QStringList():QStringList{name});else if(id==24000)away.newMessage();else if(id>=BuddyListWindow::AwaySavedBase&&id<BuddyListWindow::AwaySavedBase+100)away.useSaved(id-BuddyListWindow::AwaySavedBase);});
+  QObject::connect(&window,&SignOnWindow::actionRequested,&messaging,[&](int id,const QString &name){auto openIm=[&](int,const QString &who){messaging.openMessage(who);};if(id==139)messaging.openMessage(name);else if(id==138)BuddyInfoWindow::open(&client,name,openIm);else if(id==390)userActions::block(nullptr,&client,name);else if(id==18){if(!name.isEmpty())talk.start(name);}else if(id==561)chats.invite(name.isEmpty()?QStringList():QStringList{name});else if(id==24000)away.newMessage();else if(id>=BuddyListWindow::AwaySavedBase&&id<BuddyListWindow::AwaySavedBase+100)away.useSaved(id-BuddyListWindow::AwaySavedBase);});
   window.show();
   if (app.arguments().contains(QStringLiteral("--ui-preview=im"))) messaging.openMessage();
   if (app.arguments().contains(QStringLiteral("--ui-preview=im-conversation"))) messaging.previewConversation();
+  if (app.arguments().contains(QStringLiteral("--ui-preview=talk"))) TalkSessions::preview();
   if (app.arguments().contains(QStringLiteral("--ui-preview=info"))) BuddyInfoWindow::preview(&client);
   if (app.arguments().contains(QStringLiteral("--ui-preview=chat"))) chats.preview(); // developer preview of the IM window without signing on
   std::unique_ptr<BuddyListWindow> previewBuddyList; if (app.arguments().contains(QStringLiteral("--ui-preview=buddy"))) { previewBuddyList = std::make_unique<BuddyListWindow>(&client); previewBuddyList->show(); }

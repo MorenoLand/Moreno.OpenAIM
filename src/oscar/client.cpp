@@ -180,7 +180,7 @@ void OscarClient::handleSnac(const aim::oscar::Snac &snac) {
       if (phase_ == Phase::Failed) return;
       sendBuddyRequests();
       if (phase_ == Phase::Failed) return;
-      sendSnac(0x02,0x04,aim::oscar::encodeTlv(5,aim::oscar::capChat()+aim::oscar::capDirectIm())); // Chat, IM Image
+      sendSnac(0x02,0x04,aim::oscar::encodeTlv(5,aim::oscar::capChat()+aim::oscar::capDirectIm()+aim::oscar::capVoice())); // Chat, IM Image, Talk
       if (phase_ == Phase::Failed) return;
       sendSnac(0x04,0x04);
       if (phase_ == Phase::Failed) return;
