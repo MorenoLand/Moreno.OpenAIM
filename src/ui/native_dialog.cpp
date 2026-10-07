@@ -83,8 +83,8 @@ INT_PTR CALLBACK modelessDialogProc(HWND window, UINT message, WPARAM wParam, LP
     return TRUE;
   }
   if (!state) return FALSE;
-  if (message == WM_COMMAND) { if (state->command && state->command(window, LOWORD(wParam), HIWORD(wParam))) return TRUE; if (LOWORD(wParam) == IDCANCEL) { DestroyWindow(window); return TRUE; } }
-  if (message == WM_CLOSE) { if (!state->command || !state->command(window, IDCANCEL, BN_CLICKED)) DestroyWindow(window); return TRUE; }
+  if (message == WM_COMMAND) { const auto command=state->command;if (command && command(window, LOWORD(wParam), HIWORD(wParam))) return TRUE; if (LOWORD(wParam) == IDCANCEL) { DestroyWindow(window); return TRUE; } }
+  if (message == WM_CLOSE) { const auto command=state->command;if (!command || !command(window, IDCANCEL, BN_CLICKED)) DestroyWindow(window); return TRUE; }
   if (message == WM_NCDESTROY) { if (state->font) DeleteObject(state->font); SetWindowLongPtrW(window, DWLP_USER, 0); delete state; }
   return FALSE;
 }

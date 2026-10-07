@@ -6,6 +6,7 @@
 #include <QTextCursor>
 #include <QTextDocument>
 #include <QTextStream>
+#include "../src/ui/native_dialog.h"
 int main(int argc,char **argv) {
   QGuiApplication::setOrganizationName(QStringLiteral("MorenoLand"));QGuiApplication::setApplicationName(QStringLiteral("OpenAIM-colorcheck"));QGuiApplication app(argc,argv);QTextStream out(stdout);int failures=0;
   auto check=[&](const QString &name,bool ok){out<<(ok?"PASS ":"FAIL ")<<name<<Qt::endl;if(!ok)++failures;};
@@ -20,5 +21,8 @@ int main(int argc,char **argv) {
   check(QStringLiteral("explicit paragraph background preserved"),explicitBackground);check(QStringLiteral("explicit blue foreground preserved"),explicitForeground);
   QTextDocument blackDocument;QTextCursor blackCursor(&blackDocument);QTextCharFormat blackFormat;blackFormat.setForeground(Qt::black);blackCursor.insertText(QStringLiteral("black"),blackFormat);check(QStringLiteral("explicit black foreground preserved in outgoing HTML"),ate::html(blackDocument,Qt::white).contains(QStringLiteral("COLOR=\"#000000\"")));
   QTextDocument yellowDocument;QTextCursor yellowCursor(&yellowDocument);ate::insertMessageHtml(yellowCursor,QStringLiteral("<BODY BGCOLOR=yellow>default</BODY>"),Qt::white);check(QStringLiteral("bright yellow background uses readable default text"),yellowCursor.charFormat().foreground().color()==Qt::black);
+#ifdef Q_OS_WIN
+  bool completed=false;HWND dialog=createOriginalDialog(nullptr,230,{},[&,marker=QString(512,QLatin1Char('x'))](HWND window,int id,int){if(id!=IDCANCEL)return false;DestroyWindow(window);completed=marker.size()==512;return true;});if(dialog)SendMessageW(dialog,WM_COMMAND,MAKEWPARAM(IDCANCEL,BN_CLICKED),0);check(QStringLiteral("modeless callback survives destroying its dialog"),dialog&&completed&&!IsWindow(dialog));
+#endif
   out<<"SUMMARY failures="<<failures<<Qt::endl;return failures;
 }
