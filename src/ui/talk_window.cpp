@@ -256,7 +256,7 @@ void TalkSessions::incoming(const aim::oscar::Rendezvous &rv) {
   if (rv.type != 0) return;
   const quint16 sequence = tlv16(rv, 0x0a, 1);
   if (session && session->cookie == rv.cookie) { // counter-proposal: connect to the caller's listener
-    if (!session->caller && session->call && sequence > 1) session->call->connectTo(addressesOf(rv), tlv16(rv, 0x05));
+    if (!session->caller && session->call && sequence > 1) {session->call->connectTo(addressesOf(rv), tlv16(rv, 0x05));session->timer.start(30000);}
     return;
   }
   auto reject = [&](quint16 reason) { Session temp; temp.name = name; temp.cookie = rv.cookie; cancel(&temp, reason); };

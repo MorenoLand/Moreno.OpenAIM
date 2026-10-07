@@ -10,6 +10,7 @@
 #include <QFile>
 #include <QRandomGenerator>
 #include <QTextStream>
+#include <QtEndian>
 #include <functional>
 
 using aim::oscar::ChatInvitation;
@@ -170,9 +171,9 @@ void scenarioMessaging(Recorder &a, Recorder &b) {
   else pass("im unicode 2->1 (exact round-trip)");
 
   const qsizetype failed = a.opFailures.size();
-  a.client.sendMessage(QStringLiteral("openaimtest_nobody_zz"), QStringLiteral("ping"));
+  a.client.sendMessage(QString(), QStringLiteral("ping"));
   const bool err = waitFor([&] { return a.opFailures.size() > failed; });
-  check("im to nonexistent user -> operationFailed", err, "no operationFailed within timeout");
+  check("im invalid recipient -> operationFailed", err, "no operationFailed within timeout");
   if (err) out << "     (reason: " << a.opFailures.last().second << ")" << Qt::endl;
 }
 
@@ -265,7 +266,7 @@ void scenarioBuddies(Recorder &a, Recorder &b) {
 
 // IM Image: propose over ICBM channel 2 through the server, the acceptor connects to port 4443, ODC2 frames both ways.
 void scenarioDirectIm(Recorder &a, Recorder &b) {
-  QVector<Rendezvous> received; QObject::connect(&b.client, &OscarClient::rendezvousReceived, &b.client, [&](const Rendezvous &rv) { received.append(rv); });
+  QObject context;QVector<Rendezvous> received; QObject::connect(&b.client, &OscarClient::rendezvousReceived, &context, [&](const Rendezvous &rv) { received.append(rv); });
   const quint64 cookie = 0x1122334455667788ULL;
   DirectConnection listener(cookie, a.name); if (!listener.listen()) { fail("direct im listen", "port 4443 unavailable"); return; }
   Rendezvous rv; rv.type = 0; rv.cookie = cookie; rv.capability = capDirectIm(); QByteArray port(2, 0); port[0] = char(0x14); port[1] = char(0x46);
@@ -298,9 +299,43 @@ void scenarioDirectIm(Recorder &a, Recorder &b) {
 
 // Talk engine on this machine: callee listens, caller connects (case 1), 18-byte handshake, UDP probe, Rtv audio
 // both ways, half-duplex control frames, hang up.
+void scenarioTalkRendezvous(Recorder &a,Recorder &b) {
+  QObject context;QVector<Rendezvous> toCaller,toCallee;QStringList errors;const quint64 cookie=QRandomGenerator::global()->generate64();
+  TalkCall caller(cookie,TalkCall::Role::Caller,false),callee(cookie,TalkCall::Role::Callee,false);
+  caller.audio().setSpeakerVolume(0);callee.audio().setSpeakerVolume(0);
+  bool callerConnected=false,calleeConnected=false,calleeEnded=false;int callerSamples=0,calleeSamples=0;quint16 calleePort=0,callerPort=0;
+  auto value=[](const Rendezvous &rv,quint16 tag){for(const auto &tlv:rv.values)if(tlv.tag==tag)return tlv.value;return QByteArray();};
+  auto sequence=[&](const Rendezvous &rv){const QByteArray bytes=value(rv,0x0a);return bytes.size()==2?qFromBigEndian<quint16>(bytes.constData()):quint16(0);};
+  auto addresses=[&](const Rendezvous &rv){QList<QHostAddress> result;for(quint16 tag:{quint16(3),quint16(4),quint16(2)}){const QByteArray ip=value(rv,tag);if(ip.size()==4){const QHostAddress address(qFromBigEndian<quint32>(ip.constData()));if(!address.isNull()&&!result.contains(address))result.append(address);}}return result;};
+  auto send=[&](Recorder &from,Recorder &to,quint16 type,quint16 port,quint16 seq){Rendezvous rv;rv.type=type;rv.cookie=cookie;rv.capability=aim::oscar::capVoice();rv.values.append({3,QByteArray::fromHex("7f000001")});if(port){QByteArray bytes(2,0);qToBigEndian(port,bytes.data());rv.values.append({5,bytes});}if(type==0){QByteArray bytes(2,0);qToBigEndian(seq,bytes.data());rv.values.append({0x0a,bytes});rv.values.append({0x2711,QByteArray::fromHex("00000001")});}return from.client.sendRendezvous(to.name,rv);};
+  QObject::connect(&caller,&TalkCall::connected,&context,[&]{callerConnected=true;caller.audio().setCapturing(false);});
+  QObject::connect(&callee,&TalkCall::connected,&context,[&]{calleeConnected=true;callee.audio().setCapturing(false);});
+  QObject::connect(&caller,&TalkCall::audioReceived,&context,[&](int count){callerSamples+=count;});
+  QObject::connect(&callee,&TalkCall::audioReceived,&context,[&](int count){calleeSamples+=count;});
+  QObject::connect(&callee,&TalkCall::ended,&context,[&](bool){calleeEnded=true;});
+  QObject::connect(&caller,&TalkCall::failed,&context,[&](const QString &reason){errors.append(QStringLiteral("caller: ")+reason);});
+  QObject::connect(&callee,&TalkCall::failed,&context,[&](const QString &reason){errors.append(QStringLiteral("callee: ")+reason);});
+  QObject::connect(&a.client,&OscarClient::rendezvousReceived,&context,[&](const Rendezvous &rv){if(rv.cookie!=cookie||rv.capability!=aim::oscar::capVoice()||!same(rv.sender,b.name))return;toCaller.append(rv);if(rv.type!=2)return;const QByteArray port=value(rv,5);if(port.size()!=2){errors.append(QStringLiteral("accept missing listener port"));return;}caller.connectTo(addresses(rv),qFromBigEndian<quint16>(port.constData()));callerPort=caller.listen();if(!callerPort||!send(a,b,0,callerPort,2))errors.append(QStringLiteral("counter-proposal failed"));});
+  QObject::connect(&b.client,&OscarClient::rendezvousReceived,&context,[&](const Rendezvous &rv){if(rv.cookie!=cookie||rv.capability!=aim::oscar::capVoice()||!same(rv.sender,a.name))return;toCallee.append(rv);if(rv.type!=0)return;if(sequence(rv)==1){calleePort=callee.listen();if(!calleePort||!send(b,a,2,calleePort,0))errors.append(QStringLiteral("accept failed"));}else if(sequence(rv)==2){const QByteArray port=value(rv,5);if(port.size()!=2){errors.append(QStringLiteral("counter-proposal missing listener port"));return;}callee.connectTo(addresses(rv),qFromBigEndian<quint16>(port.constData()));}});
+  check("talk rendezvous proposal sent",send(a,b,0,0,1),a.lastOpFailure());
+  const bool relayed=waitFor([&]{return !toCaller.isEmpty()&&toCallee.size()>=2||!errors.isEmpty();});
+  check("talk rendezvous propose/accept/counter relayed",relayed&&errors.isEmpty()&&toCaller.size()==1&&toCallee.size()==2,errors.isEmpty()?QStringLiteral("caller=%1 callee=%2").arg(toCaller.size()).arg(toCallee.size()):errors.join(';'));
+  if(!relayed||!errors.isEmpty()||toCaller.isEmpty()||toCallee.size()<2)return;
+  const Rendezvous proposal=toCallee[0],accept=toCaller[0],counter=toCallee[1];
+  check("talk rendezvous proposal contents",proposal.type==0&&sequence(proposal)==1&&value(proposal,5).isEmpty()&&value(proposal,0x2711)==QByteArray::fromHex("00000001")&&value(proposal,4).size()==4,QStringLiteral("proposal fields or verified IP mismatch"));
+  check("talk rendezvous accept contents",accept.type==2&&value(accept,3)==QByteArray::fromHex("7f000001")&&value(accept,5).size()==2&&qFromBigEndian<quint16>(value(accept,5).constData())==calleePort,QStringLiteral("accept address or listener port mismatch"));
+  check("talk rendezvous counter contents",counter.type==0&&sequence(counter)==2&&value(counter,5).size()==2&&qFromBigEndian<quint16>(value(counter,5).constData())==callerPort&&value(counter,4).size()==4,QStringLiteral("counter sequence, listener port or verified IP mismatch"));
+  const bool connected=waitFor([&]{return callerConnected&&calleeConnected||!errors.isEmpty();},15000);check("talk rendezvous call connected",connected&&callerConnected&&calleeConnected,errors.isEmpty()?QStringLiteral("caller=%1 callee=%2").arg(callerConnected).arg(calleeConnected):errors.join(';'));if(!callerConnected||!calleeConnected)return;
+  caller.audio().setCapturing(false);callee.audio().setCapturing(false);QByteArray pcm(TalkAudio::ChunkBytes,0);auto *samples=reinterpret_cast<qint16*>(pcm.data());for(int i=0;i<TalkAudio::ChunkSamples;++i)samples[i]=qint16(6000*std::sin(i*0.12)+3000*std::sin(i*0.37));
+  const int beforeCaller=callerSamples,beforeCallee=calleeSamples;for(int i=0;i<4;++i){emit caller.audio().captured(pcm);emit callee.audio().captured(pcm);settle(50);}
+  check("talk rendezvous audio both directions",waitFor([&]{return callerSamples-beforeCaller>=4*TalkAudio::ChunkSamples&&calleeSamples-beforeCallee>=4*TalkAudio::ChunkSamples;},5000),QStringLiteral("caller=%1 callee=%2 decoded samples").arg(callerSamples-beforeCaller).arg(calleeSamples-beforeCallee));
+  caller.hangUp();check("talk rendezvous hangup",waitFor([&]{return calleeEnded;},3000),QStringLiteral("callee did not receive BYE"));
+}
+
 void scenarioTalkLoopback() {
   const quint64 cookie = 0xA1B2C3D4E5F60718ULL;
   TalkCall callee(cookie, TalkCall::Role::Callee, false), caller(cookie, TalkCall::Role::Caller, false);
+  caller.audio().setSpeakerVolume(0);callee.audio().setSpeakerVolume(0);
   const quint16 port = callee.listen(); check("talk callee listener", port >= 1112 && port <= 3333, QStringLiteral("port %1").arg(port));
   bool c1 = false, c2 = false; int heardByCallee = 0, heardByCaller = 0; bool calleeEnded = false;
   QObject::connect(&caller, &TalkCall::connected, &caller, [&] { c1 = true; });
@@ -315,6 +350,7 @@ void scenarioTalkLoopback() {
   QByteArray pcm(TalkAudio::ChunkBytes, 0); auto *s = reinterpret_cast<qint16 *>(pcm.data());
   for (int i = 0; i < TalkAudio::ChunkSamples; ++i) s[i] = qint16(6000 * std::sin(i * 0.12) + 3000 * std::sin(i * 0.37));
   caller.startSending(); callee.startSending(); settle(300);
+  caller.audio().setCapturing(false);callee.audio().setCapturing(false);
   for (int i = 0; i < 4; ++i) { emit caller.audio().captured(pcm); emit callee.audio().captured(pcm); settle(50); }
   check("talk audio caller->callee decoded", waitFor([&] { return heardByCallee >= 4 * 1440; }, 5000), QStringLiteral("%1 samples").arg(heardByCallee));
   check("talk audio callee->caller decoded", waitFor([&] { return heardByCaller >= 4 * 1440; }, 5000), QStringLiteral("%1 samples").arg(heardByCaller));
@@ -359,6 +395,7 @@ int main(int argc, char **argv) {
     scenarioChat(a, b);
     scenarioBuddies(a, b);
     scenarioDirectIm(a, b);
+    scenarioTalkRendezvous(a,b);
     scenarioTalkLoopback();
   }
   scenarioSignOff(a, b);
