@@ -119,7 +119,7 @@ void CtlWindow::paintObject(QPainter &p, CtlObject &o) {
     return;
   }
   case CtlObject::Kind::Ate: {
-    p.fillRect(r, isComposePane(o.id) ? prefs::composeWindowColor() : QColor(Qt::white)); art::drawSunken(p, r); // compose panes use the default window colour
+    p.fillRect(r, prefs::composeWindowColor()); art::drawSunken(p, r);
     const QRect bar = toolbarRect(o);
     if (bar.isValid()) { Pane &pn = pane(o.id); if (!pn.toolbar) pn.toolbar = std::make_unique<AteToolbar>(AteToolbar::Set::Chat); pn.toolbar->layout(bar); pn.toolbar->paint(p, toolPane_ == o.id ? hoveredTool_ : -1, toolPane_ == o.id ? pressedTool_ : -1, {}); }
     if (isEditable(o)) paintEditor(p, o, textRect(o), pane(o.id), false);
@@ -152,10 +152,10 @@ void CtlWindow::paintEditor(QPainter &p, const CtlObject &o, const QRect &area, 
   scroll = qBound(qreal(0), caretY - area.height(), qMax(qreal(0), doc.documentLayout()->documentSize().height() - area.height()));
   qreal hscroll = 0; if (singleLine && line.isValid()) hscroll = qMax(qreal(0), blockRect.left() + line.cursorToX(position) - area.width() + 4);
   p.save(); p.setClipRect(area); p.translate(area.left() - hscroll, area.top() - scroll + (singleLine ? qMax(qreal(0), (area.height() - doc.size().height()) / 2) : 0));
-  QAbstractTextDocumentLayout::PaintContext context; context.palette = panePalette(); context.clip = QRectF(hscroll, scroll, area.width(), area.height());
+  auto context = o.kind == CtlObject::Kind::Ate ? ate::paintContext(doc, prefs::composeWindowColor()) : QAbstractTextDocumentLayout::PaintContext(); if (o.kind != CtlObject::Kind::Ate) context.palette = panePalette(); context.clip = QRectF(hscroll, scroll, area.width(), area.height());
   if (ed.cursor.hasSelection()) { QAbstractTextDocumentLayout::Selection selection; selection.cursor = ed.cursor; selection.format.setBackground(QColor(0, 120, 215)); selection.format.setForeground(Qt::white); context.selections.append(selection); }
   doc.documentLayout()->draw(&p, context);
-  if (focus_ == o.id && isActive() && line.isValid()) { const qreal x = blockRect.left() + line.cursorToX(position), y = blockRect.top() + line.y(); p.setPen(Qt::black); p.drawLine(QPointF(x, y), QPointF(x, y + line.height())); }
+  if (focus_ == o.id && isActive() && line.isValid()) { const qreal x = blockRect.left() + line.cursorToX(position), y = blockRect.top() + line.y(); p.setPen(o.kind == CtlObject::Kind::Ate && qGray(prefs::composeWindowColor().rgb()) < 128 ? Qt::white : Qt::black); p.drawLine(QPointF(x, y), QPointF(x, y + line.height())); }
   p.restore();
 }
 void CtlWindow::paintDocument(QPainter &p, const QRect &area, Pane &pn, quint32 id) {
@@ -164,7 +164,7 @@ void CtlWindow::paintDocument(QPainter &p, const QRect &area, Pane &pn, quint32 
   const qreal maximum = qMax(qreal(0), doc.documentLayout()->documentSize().height() - height);
   pn.scroll = follow_.value(id, false) ? maximum : qBound(qreal(0), pn.scroll, maximum);
   p.save(); p.setClipRect(area); p.translate(area.left(), area.top()); p.scale(zoom, zoom); p.translate(0, -pn.scroll);
-  QAbstractTextDocumentLayout::PaintContext context; context.palette = panePalette(); context.clip = QRectF(0, pn.scroll, width, height);
+  auto context = ate::paintContext(doc, prefs::composeWindowColor()); context.clip = QRectF(0, pn.scroll, width, height);
   doc.documentLayout()->draw(&p, context); p.restore();
 }
 

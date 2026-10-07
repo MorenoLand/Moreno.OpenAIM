@@ -58,8 +58,6 @@ const QColor Face(240, 240, 240), Shadow(160, 160, 160), Highlight(255, 255, 255
 QString aimString(quint32 id) { return aimEnvironment().string(id); }
 QFont ateFont(bool bold = false) { QFont font(QStringLiteral("Times New Roman")); font.setPixelSize(16); font.setBold(bold); return font; } // AIM default IM font: Times New Roman 12 pt
 QFont controlFont() { return CtlEnvironment::font(106); }
-// ATE panes are black text on a white window (WindowColor default 0xFFFFFF), whatever the system colour scheme is.
-QPalette atePalette() { QPalette palette; palette.setColor(QPalette::Text, Qt::black); palette.setColor(QPalette::WindowText, Qt::black); palette.setColor(QPalette::Base, Qt::white); palette.setColor(QPalette::Link, QColor(0, 0, 255)); return palette; }
 QString normalizedName(QString name) { name.remove(QLatin1Char(' ')); return name.toCaseFolded(); }
 bool isHtml(const QString &text) { return text.contains(QRegularExpression(QStringLiteral("</?[A-Za-z!][^>]*>"))); }
 
@@ -76,10 +74,10 @@ public:
     if (!first_) cursor.insertBlock();
     cursor.insertHtml(QStringLiteral("<font color=%1><b>%2</b>%3%4</font>&nbsp;").arg(color, name.toHtmlEscaped(), stamp.toHtmlEscaped(), separator));
     const int start = cursor.position();
-    ate::insertMessageHtml(cursor, body, QColor(Qt::white)); first_ = false; followBottom = true;
+    ate::insertMessageHtml(cursor, body); first_ = false; followBottom = true;
     ate::insertSmileys(document, start);
   }
-  void appendNotice(const QString &html) { QTextCursor cursor(&document); cursor.movePosition(QTextCursor::End); if (!first_) cursor.insertBlock(); ate::insertMessageHtml(cursor, QStringLiteral("<hr>") + html, QColor(Qt::white)); first_ = false; followBottom = true; }
+  void appendNotice(const QString &html) { QTextCursor cursor(&document); cursor.movePosition(QTextCursor::End); if (!first_) cursor.insertBlock(); ate::insertMessageHtml(cursor, QStringLiteral("<hr>") + html); first_ = false; followBottom = true; }
   QTextDocument document;
   qreal scroll = 0;
   bool followBottom = true;
@@ -323,7 +321,7 @@ private:
   }
   void paintAte(QPainter &p, const QRect &r, bool composePane) {
     if (!r.isValid()) return;
-    p.fillRect(r, composePane ? prefs::composeWindowColor() : QColor(Qt::white)); p.setPen(PaneBorder); p.drawRect(r.adjusted(0, 0, -1, -1));
+    p.fillRect(r, prefs::composeWindowColor()); p.setPen(PaneBorder); p.drawRect(r.adjusted(0, 0, -1, -1));
     QRect view = r.adjusted(1, 1, -1, -1);
     if (composePane) {
       const QRect toolbar(view.left(), view.top(), view.width(), ToolbarHeight);
@@ -339,10 +337,10 @@ private:
     const QRectF blockRect = editor.document.documentLayout()->blockBoundingRect(block); const qreal caretY = line.isValid() ? blockRect.top() + line.y() + line.height() : blockRect.bottom();
     editor.scroll = qBound(qreal(0), caretY - view.height() + 2, qMax(qreal(0), documentSize.height() - view.height()));
     p.save(); p.setClipRect(view); p.translate(view.left(), view.top() - editor.scroll);
-    QAbstractTextDocumentLayout::PaintContext context; context.clip = QRectF(0, editor.scroll, view.width(), view.height()); context.palette = atePalette();
+    auto context = ate::paintContext(editor.document, prefs::composeWindowColor()); context.clip = QRectF(0, editor.scroll, view.width(), view.height());
     if (editor.cursor.hasSelection()) { QAbstractTextDocumentLayout::Selection selection; selection.cursor = editor.cursor; selection.format.setBackground(QColor(0, 120, 215)); selection.format.setForeground(Qt::white); context.selections.append(selection); }
     editor.document.documentLayout()->draw(&p, context);
-    if (focus_ == 1 && caretOn() && line.isValid()) { const qreal x = line.cursorToX(blockPosition), y = blockRect.top() + line.y(); p.setPen(Qt::black); p.drawLine(QPointF(blockRect.left() + x, y), QPointF(blockRect.left() + x, y + line.height())); }
+    if (focus_ == 1 && caretOn() && line.isValid()) { const qreal x = line.cursorToX(blockPosition), y = blockRect.top() + line.y(); p.setPen(qGray(prefs::composeWindowColor().rgb()) < 128 ? Qt::white : Qt::black); p.drawLine(QPointF(blockRect.left() + x, y), QPointF(blockRect.left() + x, y + line.height())); }
     p.restore();
   }
   void drawTranscript(QPainter &p, const QRect &view) {
@@ -352,7 +350,7 @@ private:
     const qreal maxScroll = qMax(qreal(0), transcript_.document.documentLayout()->documentSize().height() - height);
     transcript_.scroll = transcript_.followBottom ? maxScroll : qBound(qreal(0), transcript_.scroll, maxScroll);
     if (transcript_.scroll >= maxScroll) transcript_.followBottom = true;
-    p.save(); p.setClipRect(view); p.translate(view.left(), view.top()); p.scale(zoom, zoom); p.translate(0, -transcript_.scroll); { QAbstractTextDocumentLayout::PaintContext context; context.clip = QRectF(0, transcript_.scroll, width, height); context.palette = atePalette(); p.setClipRect(QRectF(0, transcript_.scroll, width, height), Qt::IntersectClip); transcript_.document.documentLayout()->draw(&p, context); } p.restore();
+    p.save(); p.setClipRect(view); p.translate(view.left(), view.top()); p.scale(zoom, zoom); p.translate(0, -transcript_.scroll); { auto context = ate::paintContext(transcript_.document, prefs::composeWindowColor()); context.clip = QRectF(0, transcript_.scroll, width, height); p.setClipRect(QRectF(0, transcript_.scroll, width, height), Qt::IntersectClip); transcript_.document.documentLayout()->draw(&p, context); } p.restore();
   }
   void paintRateMeter(QPainter &p, const QRect &r) {
     // _Oscar_RateMeter: 15 cells, 3 px pitch ((15+1)*3 x 8); red/yellow at the low end, green when sending is allowed.

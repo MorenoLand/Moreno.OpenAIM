@@ -88,32 +88,24 @@ QString html(const QTextDocument &document, const QColor &background, QList<QByt
   return QStringLiteral("<HTML><BODY BGCOLOR=\"%1\">%2</BODY></HTML>").arg(background.name(), body);
 }
 
-void insertMessageHtml(QTextCursor &cursor, const QString &html, const QColor &fallbackBackground) {
-  QColor background = fallbackBackground;
-  static const QRegularExpression body(QStringLiteral("<BODY\\b([^>]*)>"), QRegularExpression::CaseInsensitiveOption);
+void insertMessageHtml(QTextCursor &cursor, const QString &html) {
   static const QRegularExpression bodyContent(QStringLiteral("<BODY\\b[^>]*>([\\s\\S]*?)</BODY>"), QRegularExpression::CaseInsensitiveOption);
-  static const QRegularExpression bgcolor(QStringLiteral("\\bBGCOLOR\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)'|([^\\s>]+))"), QRegularExpression::CaseInsensitiveOption);
-  const QRegularExpressionMatch bodyMatch = body.match(html);
-  if (bodyMatch.hasMatch()) {
-    const QRegularExpressionMatch colorMatch = bgcolor.match(bodyMatch.captured(1));
-    if (colorMatch.hasMatch()) {
-      QString value = colorMatch.captured(1); if (value.isEmpty()) value = colorMatch.captured(2); if (value.isEmpty()) value = colorMatch.captured(3);
-      const QColor parsed(value); if (parsed.isValid()) background = parsed;
-    }
+  QTextBlockFormat block = cursor.blockFormat(); block.clearBackground(); cursor.setBlockFormat(block);
+  QTextCharFormat format = cursor.charFormat(); format.clearForeground(); format.clearBackground(); cursor.setCharFormat(format);
+  const QRegularExpressionMatch content = bodyContent.match(html); cursor.insertHtml(content.hasMatch() ? content.captured(1) : html);
+}
+QAbstractTextDocumentLayout::PaintContext paintContext(QTextDocument &document, const QColor &background) {
+  QAbstractTextDocumentLayout::PaintContext context; context.palette.setColor(QPalette::Text, qGray(background.rgb()) < 128 ? Qt::white : Qt::black); context.palette.setColor(QPalette::Base, background); context.palette.setColor(QPalette::Link, QColor(0, 0, 255));
+  for (QTextBlock block = document.begin(); block.isValid(); block = block.next()) for (auto it = block.begin(); !it.atEnd(); ++it) {
+    const QTextFragment fragment = it.fragment(); if (!fragment.isValid() || fragment.charFormat().isImageFormat()) continue;
+    const QTextCharFormat format = fragment.charFormat(); const QColor foreground = format.foreground().style() == Qt::NoBrush ? (format.isAnchor() ? QColor(0, 0, 255) : context.palette.color(QPalette::Text)) : format.foreground().color(), back = format.background().style() == Qt::NoBrush ? (block.blockFormat().background().style() == Qt::NoBrush ? background : block.blockFormat().background().color()) : format.background().color();
+    const int dr = foreground.red() - back.red(), dg = foreground.green() - back.green(), db = foreground.blue() - back.blue();
+    if (foreground != back && !(qAbs(dr) <= 64 && qAbs(dg) <= 64 && qAbs(db) <= 64) && qAbs(dr) + qAbs(dg) + qAbs(db) > 192) continue;
+    const bool darken = qMax(foreground.red(), qMax(foreground.green(), foreground.blue())) > 128 && (dr + dg + db <= 0 || foreground == QColor(Qt::white));
+    auto channel = [darken](int value) { return darken ? value / 2 : qMin(value + 127, 255); };
+    QAbstractTextDocumentLayout::Selection selection; selection.cursor = QTextCursor(&document); selection.cursor.setPosition(fragment.position()); selection.cursor.setPosition(fragment.position() + fragment.length(), QTextCursor::KeepAnchor); selection.format.setForeground(QColor(channel(foreground.red()), channel(foreground.green()), channel(foreground.blue()))); context.selections.append(selection);
   }
-  const int start = cursor.position(); QTextBlockFormat block = cursor.blockFormat(); block.clearBackground(); cursor.setBlockFormat(block);
-  QTextCharFormat insertionFormat = cursor.charFormat(); insertionFormat.clearForeground(); insertionFormat.clearBackground(); cursor.setCharFormat(insertionFormat);
-  const QRegularExpressionMatch contentMatch = bodyContent.match(html); const QString content = contentMatch.hasMatch() ? contentMatch.captured(1) : html;
-  cursor.insertHtml(content);
-  const int end = cursor.position(); QTextDocument *document = cursor.document(); struct UnstyledRange { int position; int length; QColor foreground; }; QList<UnstyledRange> unstyled;
-  for (QTextBlock current = document->findBlock(start); current.isValid() && current.position() <= end; current = current.next()) {
-    QTextBlockFormat format = current.blockFormat(); QColor textBackground = background;
-    if (format.hasProperty(QTextFormat::BackgroundBrush)) { const QColor explicitBackground = format.background().color(); if (explicitBackground.isValid()) textBackground = explicitBackground; }
-    else { format.setBackground(background); QTextCursor blockCursor(current); blockCursor.setBlockFormat(format); }
-    const QColor foreground = qGray(textBackground.rgb()) < 128 ? QColor(Qt::white) : QColor(Qt::black);
-    for (auto it = current.begin(); !it.atEnd(); ++it) { const QTextFragment fragment = it.fragment(); if (fragment.isValid() && !fragment.charFormat().hasProperty(QTextFormat::ForegroundBrush) && !fragment.charFormat().isAnchor()) unstyled.append({fragment.position(), fragment.length(), foreground}); }
-  }
-  for (const auto &range : unstyled) { QTextCursor textCursor(document); textCursor.setPosition(range.position); textCursor.setPosition(range.position + range.length, QTextCursor::KeepAnchor); QTextCharFormat format; format.setForeground(range.foreground); textCursor.mergeCharFormat(format); }
+  return context;
 }
 
 void insertSmileys(QTextDocument &document, int from) {
