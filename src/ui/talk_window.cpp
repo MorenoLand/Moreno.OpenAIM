@@ -212,7 +212,7 @@ void TalkSessions::attachCall(Session *session) {
   session->window->show();
 }
 
-void TalkSessions::preview() { auto *window = new TalkWindow(QStringLiteral("denveous"), QStringLiteral("edward"), true); window->show(); }
+void TalkSessions::preview() { auto *window = new TalkWindow(QStringLiteral("ExampleUser"), QStringLiteral("ExampleBuddy"), true); window->show(); }
 void TalkSessions::start(const QString &screenName) {
   const QString name = screenName.trimmed(); if (name.isEmpty() || !client_->connected()) return;
   if (find(name)) { talkBox(nullptr, aimString(1324)); return; }      // "You already have a talk session with this buddy."

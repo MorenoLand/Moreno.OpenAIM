@@ -22,7 +22,7 @@ using aim::oscar::capDirectIm;
 
 namespace {
 constexpr int kTimeoutMs = 20000;
-const char kHost[] = "login.oscar.moreno.land";
+const char kHostVariable[] = "OPENAIM_TEST_HOST";
 constexpr quint16 kPort = 5190;
 const QString kGroupName = QStringLiteral("OpenAIM Selftest");
 
@@ -384,8 +384,9 @@ int main(int argc, char **argv) {
     out << "FAIL setup: could not read both test accounts from the credentials file" << Qt::endl;
     return 1;
   }
+  const QString host=qEnvironmentVariable(kHostVariable);if(host.trimmed().isEmpty()){out << "FAIL setup: set OPENAIM_TEST_HOST to your test server" << Qt::endl;return 1;}
   Recorder a(user1), b(user2);
-  scenarioSignOn(a, b, QString::fromLatin1(kHost), pass1, pass2);
+  scenarioSignOn(a, b, host, pass1, pass2);
   pass1.fill(QLatin1Char(0));
   pass2.fill(QLatin1Char(0));
   if (!a.client.connected() || !b.client.connected()) {

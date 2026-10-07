@@ -228,8 +228,8 @@ void BuddyInfoWindow::expandPanel() {
   layoutControls();
 }
 void BuddyInfoWindow::preview(OscarClient *client) {
-  auto *window = new BuddyInfoWindow(client, QStringLiteral("Edward"), {}); windows().append(window); window->show();
-  aim::oscar::UserInfo info; info.screenName = QStringLiteral("Edward"); info.signOnTime = quint32(QDateTime::currentSecsSinceEpoch() - (3 * 86400 + 9 * 3600 + 42 * 60));
+  auto *window = new BuddyInfoWindow(client, QStringLiteral("ExampleBuddy"), {}); windows().append(window); window->show();
+  aim::oscar::UserInfo info; info.screenName = QStringLiteral("ExampleBuddy"); info.signOnTime = quint32(QDateTime::currentSecsSinceEpoch() - (3 * 86400 + 9 * 3600 + 42 * 60));
   window->expandPanel(); window->showReply(info);
 }
 void BuddyInfoWindow::showReply(const aim::oscar::UserInfo &info) {

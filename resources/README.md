@@ -1,6 +1,6 @@
-# Third-party AIM artwork
+# Original AIM resources
 
-The image and icon files in this directory come from AOL Instant Messenger 4.7.2480, originally published by America Online, Inc. They are included to preserve the historical client appearance. MorenoLand and OpenAIM do not claim to have created or own these assets.
+The graphics, icons, sounds, strings, and interface data in this directory come from AOL Instant Messenger 4.7.2480, originally published by America Online, Inc. They are included to preserve the historical client. MorenoLand and OpenAIM do not claim to have created or own these resources.
 
 `aim-exe.ico` reconstructs the original executable's RT_GROUP_ICON resource 1, including its nine 16, 32, and 48 pixel variants.
 

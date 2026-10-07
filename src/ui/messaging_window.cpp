@@ -156,8 +156,8 @@ public:
     setMode(Conversation); requestUpdate(); }
   void showWindow() { show(); raise(); requestActivate(); }
   void preview() { // developer preview: a short conversation and some compose text
-    transcript_.appendMessage(QStringLiteral("Edward"), QStringLiteral("<HTML><BODY>Hey, are you there?</BODY></HTML>"), false);
-    transcript_.appendMessage(client_ ? client_->screenName() : QStringLiteral("denveous"), aimHtml([] { static QTextDocument d; d.setPlainText(QStringLiteral("Yes, I am here.")); return std::cref(d); }().get()), true);
+    transcript_.appendMessage(QStringLiteral("ExampleBuddy"), QStringLiteral("<HTML><BODY>Hey, are you there?</BODY></HTML>"), false);
+    transcript_.appendMessage(client_ ? client_->screenName() : QStringLiteral("ExampleUser"), aimHtml([] { static QTextDocument d; d.setPlainText(QStringLiteral("Yes, I am here.")); return std::cref(d); }().get()), true);
     compose_.setText(QStringLiteral("Typing a reply")); setMode(Conversation); requestUpdate();
   }
 protected:
@@ -768,4 +768,4 @@ MessagingWindows::~MessagingWindows() { if (state_) state_->shutdown(); }
 void MessagingWindows::openMessage(const QString &recipient) { if (state_) state_->open(recipient); }
 void MessagingWindows::setChatHandler(std::function<void(const QString &)> handler) { if (state_) state_->chatHandler = std::move(handler); }
 void MessagingWindows::setTalkHandler(std::function<void(const QString &)> handler) { if (state_) state_->talkHandler = std::move(handler); }
-void MessagingWindows::previewConversation() { if (state_) state_->open(QStringLiteral("edward"))->preview(); }
+void MessagingWindows::previewConversation() { if (state_) state_->open(QStringLiteral("ExampleBuddy"))->preview(); }

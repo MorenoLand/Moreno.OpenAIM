@@ -317,13 +317,13 @@ void ChatWindows::accept(const aim::oscar::ChatInvitation &invitation) {
 }
 void ChatWindows::preview() {
   // Developer preview (--ui-preview=chat): the three windows with sample data, without a connection.
-  auto *invite = new ChatInviteWindow(this, {QStringLiteral("edward")}, nullptr); invite->show();
-  aim::oscar::ChatInvitation invitation; invitation.sender = QStringLiteral("Edward"); invitation.message = aimString(701); invitation.room.name = QStringLiteral("Edward Chat17");
+  auto *invite = new ChatInviteWindow(this, {QStringLiteral("ExampleBuddy")}, nullptr); invite->show();
+  aim::oscar::ChatInvitation invitation; invitation.sender = QStringLiteral("ExampleBuddy"); invitation.message = aimString(701); invitation.room.name = QStringLiteral("ExampleBuddy Chat17");
   auto *received = new ChatInviteReceiveWindow(this, invitation); received->setFramePosition(received->framePosition() + QPoint(60, 60)); received->show();
-  auto *room = new ChatRoomWindow(this, QStringLiteral("denveous Chat58"), 0); rooms_.append(room);
+  auto *room = new ChatRoomWindow(this, QStringLiteral("ExampleUser Chat58"), 0); rooms_.append(room);
   aim::oscar::ChatRoom info; info.name = room->name(); info.cookie = QStringLiteral("preview"); room->joined(info);
-  aim::oscar::UserInfo self; self.screenName = QStringLiteral("denveous"); aim::oscar::UserInfo other; other.screenName = QStringLiteral("Edward");
+  aim::oscar::UserInfo self; self.screenName = QStringLiteral("ExampleUser"); aim::oscar::UserInfo other; other.screenName = QStringLiteral("ExampleBuddy");
   room->participants({self}); room->participants({self, other});
-  room->message(QStringLiteral("Edward"), QStringLiteral("Hi everyone")); room->message(QStringLiteral("denveous"), QStringLiteral("Hello Edward")); room->show();
+  room->message(QStringLiteral("ExampleBuddy"), QStringLiteral("Hi everyone")); room->message(QStringLiteral("ExampleUser"), QStringLiteral("Hello ExampleBuddy")); room->show();
 }
 void ChatWindows::roomClosed(ChatRoomWindow *room) { rooms_.removeIf([room](const QPointer<ChatRoomWindow> &window) { return window.isNull() || window.data() == room; }); }
