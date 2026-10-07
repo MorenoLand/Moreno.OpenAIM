@@ -118,6 +118,7 @@ public:
     recipient_.setText(recipient);
     setMode(recipient.trimmed().isEmpty() ? NewMessage : WithRecipient);
     focus_ = recipient.trimmed().isEmpty() ? 0 : 1;
+    updateTitle();
     const QRect saved = QSettings().value(QStringLiteral("windows/MessageMain")).toRect();
     setPosition(saved.isValid() ? saved.topLeft() + QPoint(16, 20) * cascade : QPoint(80 + 16 * cascade, 40 + 20 * cascade)); // cascade +16/+20 (0x1138cde0)
     if (saved.isValid()) resize(saved.size());
@@ -632,7 +633,7 @@ struct MessagingWindows::State {
   }
   aim::oscar::Rendezvous rendezvous(quint16 type, quint64 cookie) {
     aim::oscar::Rendezvous rv; rv.type = type; rv.cookie = cookie; rv.capability = aim::oscar::capDirectIm();
-    if (type != 1) { QByteArray port(2, 0); qToBigEndian<quint16>(5190, port.data()); QByteArray sequence(2, 0); qToBigEndian<quint16>(1, sequence.data()); rv.values = {{0x03, ipv4(localAddress())}, {0x05, port}, {0x0a, sequence}}; } // the advertised port stays 5190; connections use 4443
+    if (type != 1) { QByteArray port(2, 0); qToBigEndian<quint16>(5190, port.data()); QByteArray sequence(2, 0); qToBigEndian<quint16>(1, sequence.data()); const QByteArray address=ipv4(localAddress());rv.values = {{0x02,address},{0x03,address}, {0x05, port}, {0x0a, sequence}}; } // the advertised port stays 5190; connections use 4443
     return rv;
   }
   void showStatus(DirectSession *session, int textId) {

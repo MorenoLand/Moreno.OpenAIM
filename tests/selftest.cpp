@@ -6,6 +6,7 @@
 #include "talk_call.h"
 #include <cmath>
 #include <QCoreApplication>
+#include <QDir>
 #include <QElapsedTimer>
 #include <QFile>
 #include <QRandomGenerator>
@@ -21,7 +22,6 @@ using aim::oscar::capDirectIm;
 
 namespace {
 constexpr int kTimeoutMs = 20000;
-const char kDefaultAccounts[] = "G:/Development/C++/AIM/Research/test-accounts.local.txt";
 const char kHost[] = "login.oscar.moreno.land";
 constexpr quint16 kPort = 5190;
 const QString kGroupName = QStringLiteral("OpenAIM Selftest");
@@ -270,13 +270,15 @@ void scenarioDirectIm(Recorder &a, Recorder &b) {
   const quint64 cookie = 0x1122334455667788ULL;
   DirectConnection listener(cookie, a.name); if (!listener.listen()) { fail("direct im listen", "port 4443 unavailable"); return; }
   Rendezvous rv; rv.type = 0; rv.cookie = cookie; rv.capability = capDirectIm(); QByteArray port(2, 0); port[0] = char(0x14); port[1] = char(0x46);
-  QByteArray ip(4, 0); ip[0] = char(127); ip[3] = char(1); rv.values = {{0x03, ip}, {0x05, port}};
+  QByteArray ip(4, 0); ip[0] = char(127); ip[3] = char(1); rv.values = {{0x02,ip},{0x03, ip}, {0x05, port}};
   check("direct im propose sent", a.client.sendRendezvous(b.name, rv), a.lastOpFailure());
   if (!waitFor([&] { return !received.isEmpty(); })) { fail("direct im propose relayed", "no rendezvous received: " + b.lastOpFailure()); return; }
   const Rendezvous got = received.first();
   check("direct im propose contents", got.type == 0 && got.cookie == cookie && got.capability == capDirectIm() && same(got.sender, a.name), "type/cookie/capability mismatch");
   bool hasVerified = false; for (const auto &tlv : got.values) hasVerified = hasVerified || tlv.tag == 4;
   check("direct im server added verified IP", hasVerified, "no TLV 4");
+  QList<QHostAddress> candidates;bool preserved=false;for(quint16 tag:{quint16(4),quint16(3),quint16(2)})for(const auto &tlv:got.values)if(tlv.tag==tag&&tlv.value.size()==4){const QHostAddress address(qFromBigEndian<quint32>(tlv.value.constData()));if(!address.isNull()&&!candidates.contains(address))candidates.append(address);if(tag==2)preserved=tlv.value==ip;}
+  check("direct im LAN candidate preserved through server",preserved,QStringLiteral("rendezvous IP candidate missing or changed"));
   DirectConnection acceptor(cookie, b.name);
   bool aConnected = false, bConnected = false; QByteArray aGot, bGot; quint8 typing = 0;
   QObject::connect(&listener, &DirectConnection::connected, &listener, [&] { aConnected = true; });
@@ -284,8 +286,8 @@ void scenarioDirectIm(Recorder &a, Recorder &b) {
   QObject::connect(&listener, &DirectConnection::messageReceived, &listener, [&](const QByteArray &p, quint16, quint8) { aGot = p; });
   QObject::connect(&acceptor, &DirectConnection::messageReceived, &acceptor, [&](const QByteArray &p, quint16, quint8) { bGot = p; });
   QObject::connect(&acceptor, &DirectConnection::typingChanged, &acceptor, [&](quint8 f) { typing = f; });
-  acceptor.connectTo({QHostAddress(QHostAddress::LocalHost)}); // both ends run on this machine
-  check("direct im connected", waitFor([&] { return aConnected && bConnected; }, 10000), "ODC2 connection not established");
+  acceptor.connectTo(candidates); // both ends run on this machine
+  check("direct im connected from relayed candidates", waitFor([&] { return aConnected && bConnected; }, 65000), "ODC2 connection not established");
   QByteArray image("GIF89a\x01\x00\x01\x00\x80\x00\x00\x00\x00\x00\xff\xff\xff,\x00\x00\x00\x00\x01\x00\x01\x00\x00\x02\x02D\x01\x00;", 35);
   const QByteArray payload = QByteArray("<HTML><BODY>pic <IMG SRC=\"x.gif\" ID=\"1\" WIDTH=\"1\" HEIGHT=\"1\" DATASIZE=\"35\"></BODY></HTML><BINARY><DATA ID=\"1\" SIZE=\"35\">") + image + "</DATA></BINARY>";
   listener.sendTyping(0x0E);
@@ -375,7 +377,7 @@ void scenarioSignOff(Recorder &a, Recorder &b) {
 int main(int argc, char **argv) {
   QCoreApplication app(argc, argv);
   if (argc > 1 && QString::fromLocal8Bit(argv[1]) == QStringLiteral("--talk")) { scenarioTalkLoopback(); out << "SUMMARY failures=" << failures << Qt::endl; return failures; }
-  const QString path = argc > 1 ? QString::fromLocal8Bit(argv[1]) : QString::fromLatin1(kDefaultAccounts);
+  const QString path = argc > 1 ? QString::fromLocal8Bit(argv[1]) : QDir(QCoreApplication::applicationDirPath()).absoluteFilePath(QStringLiteral("../../../Research/test-accounts.local.txt"));
   const QString user1 = QStringLiteral("openaimtest1"), user2 = QStringLiteral("openaimtest2");
   QString pass1, pass2;
   if (!loadAccounts(path, user1, user2, &pass1, &pass2)) {
