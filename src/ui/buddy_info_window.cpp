@@ -123,8 +123,8 @@ void BuddyInfoWindow::createControls() {
   SetWindowLongPtrW(owner, GWL_STYLE, GetWindowLongPtrW(owner, GWL_STYLE) | WS_CLIPCHILDREN);
   // No WM_SETFONT anywhere in locateui: the combo and buttons keep the default (System) font.
   combo_ = CreateWindowExW(0, L"COMBOBOX", reinterpret_cast<LPCWSTR>(name_.utf16()), WS_CHILD | WS_VISIBLE | WS_BORDER | WS_VSCROLL | WS_TABSTOP | CBS_DROPDOWN | CBS_AUTOHSCROLL | CBS_DISABLENOSCROLL, 0, 0, 0, charH_ * 7, owner, reinterpret_cast<HMENU>(ComboId), GetModuleHandleW(nullptr), nullptr);
-  ok_ = CreateWindowExW(0, L"BUTTON", reinterpret_cast<LPCWSTR>(aimString(553).utf16()), WS_CHILD | WS_VISIBLE | WS_BORDER | WS_TABSTOP | BS_PUSHBUTTON, 0, 0, 0, 0, owner, reinterpret_cast<HMENU>(OkId), GetModuleHandleW(nullptr), nullptr);
-  close_ = CreateWindowExW(0, L"BUTTON", reinterpret_cast<LPCWSTR>(aimString(554).utf16()), WS_CHILD | WS_VISIBLE | WS_BORDER | WS_TABSTOP | BS_DEFPUSHBUTTON, 0, 0, 0, 0, owner, reinterpret_cast<HMENU>(CloseId), GetModuleHandleW(nullptr), nullptr);
+  ok_ = CreateWindowExW(0, L"BUTTON", reinterpret_cast<LPCWSTR>(aimString(553).utf16()), WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON, 0, 0, 0, 0, owner, reinterpret_cast<HMENU>(OkId), GetModuleHandleW(nullptr), nullptr);
+  close_ = CreateWindowExW(0, L"BUTTON", reinterpret_cast<LPCWSTR>(aimString(554).utf16()), WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_DEFPUSHBUTTON, 0, 0, 0, 0, owner, reinterpret_cast<HMENU>(CloseId), GetModuleHandleW(nullptr), nullptr);
   SendMessageW(static_cast<HWND>(combo_), CB_LIMITTEXT, 32, 0);
   for (const QString &recent : QSettings().value(QStringLiteral("Locate/recentScreenNames")).toStringList()) SendMessageW(static_cast<HWND>(combo_), CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(recent.utf16())); // STRING 566 "recent ScreenNames"
   SetWindowTextW(static_cast<HWND>(combo_), reinterpret_cast<LPCWSTR>(name_.utf16()));

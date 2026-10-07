@@ -7,6 +7,10 @@
 #include <QTextDocument>
 #include <QTextStream>
 #include "../src/ui/native_dialog.h"
+#include "../src/ui/buddy_info_window.h"
+#include <QThread>
+#include <QSettings>
+#include "../src/ui/native_preferences.h"
 int main(int argc,char **argv) {
   QGuiApplication::setOrganizationName(QStringLiteral("MorenoLand"));QGuiApplication::setApplicationName(QStringLiteral("OpenAIM-colorcheck"));QGuiApplication app(argc,argv);QTextStream out(stdout);int failures=0;
   auto check=[&](const QString &name,bool ok){out<<(ok?"PASS ":"FAIL ")<<name<<Qt::endl;if(!ok)++failures;};
@@ -23,6 +27,8 @@ int main(int argc,char **argv) {
   QTextDocument yellowDocument;QTextCursor yellowCursor(&yellowDocument);ate::insertMessageHtml(yellowCursor,QStringLiteral("<BODY BGCOLOR=yellow>default</BODY>"),Qt::white);check(QStringLiteral("bright yellow background uses readable default text"),yellowCursor.charFormat().foreground().color()==Qt::black);
 #ifdef Q_OS_WIN
   bool completed=false;HWND dialog=createOriginalDialog(nullptr,230,{},[&,marker=QString(512,QLatin1Char('x'))](HWND window,int id,int){if(id!=IDCANCEL)return false;DestroyWindow(window);completed=marker.size()==512;return true;});if(dialog)SendMessageW(dialog,WM_COMMAND,MAKEWPARAM(IDCANCEL,BN_CLICKED),0);check(QStringLiteral("modeless callback survives destroying its dialog"),dialog&&completed&&!IsWindow(dialog));
+  OscarClient client;BuddyInfoWindow::open(&client,QString(),{});BuddyInfoWindow *info=nullptr;HWND ok=nullptr,close=nullptr;for(int i=0;i<30&&!ok;++i){QCoreApplication::processEvents();for(QWindow *window:QGuiApplication::topLevelWindows())if(auto *candidate=dynamic_cast<BuddyInfoWindow*>(window)){info=candidate;HWND owner=reinterpret_cast<HWND>(info->winId());ok=GetDlgItem(owner,0x11);close=GetDlgItem(owner,2);break;}if(!ok)QThread::msleep(10);}check(QStringLiteral("Buddy Info buttons have no redundant window border"),ok&&close&&!(GetWindowLongPtrW(ok,GWL_STYLE)&WS_BORDER)&&!(GetWindowLongPtrW(close,GWL_STYLE)&WS_BORDER));if(info)info->close();QCoreApplication::sendPostedEvents(nullptr,QEvent::DeferredDelete);
+  QSettings settings;settings.setValue(QStringLiteral("IM/IMDirectNoStartDlg"),true);settings.setValue(QStringLiteral("IM/IMDirectNoStatusDlg"),true);settings.sync();NativePreferences preferences(nullptr);preferences.activatePage(276);QCoreApplication::processEvents();HWND host=GetActiveWindow();HWND checks[2]{};EnumChildWindows(host,[](HWND window,LPARAM data)->BOOL{auto *controls=reinterpret_cast<HWND*>(data);int id=GetDlgCtrlID(window);if(id==825)controls[0]=window;if(id==826)controls[1]=window;return TRUE;},reinterpret_cast<LPARAM>(checks));check(QStringLiteral("IM Image Display boxes load inverted suppression settings"),checks[0]&&checks[1]&&SendMessageW(checks[0],BM_GETCHECK,0,0)==BST_UNCHECKED&&SendMessageW(checks[1],BM_GETCHECK,0,0)==BST_UNCHECKED);if(checks[0]&&checks[1]){SendMessageW(checks[0],BM_SETCHECK,BST_CHECKED,0);SendMessageW(checks[1],BM_SETCHECK,BST_CHECKED,0);SendMessageW(host,WM_COMMAND,MAKEWPARAM(264,BN_CLICKED),0);settings.sync();check(QStringLiteral("IM Image Apply re-enables start and status dialogs"),!settings.value(QStringLiteral("IM/IMDirectNoStartDlg")).toBool()&&!settings.value(QStringLiteral("IM/IMDirectNoStatusDlg")).toBool());}preferences.close();
 #endif
   out<<"SUMMARY failures="<<failures<<Qt::endl;return failures;
 }
