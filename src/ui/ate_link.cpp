@@ -19,6 +19,10 @@
 #include <commdlg.h>
 #endif
 
+#include <QRegularExpression>
+#include <QTextBlockFormat>
+#include <QTextFragment>
+
 namespace {
 constexpr int HtmlSizeProperty = QTextFormat::UserProperty + 1; // HTML font size 1..7 of a run (IM compose pane)
 QString aimString(quint32 id) { return aimEnvironment().string(id); }
@@ -69,7 +73,7 @@ QString html(const QTextDocument &document, const QColor &background, QList<QByt
       if (f.isAnchor() && !inLink) { openHref = f.anchorHref(); body += QStringLiteral("<A HREF=\"%1\">").arg(openHref); inLink = true; } // the URL is not escaped (quotes are refused by the dialog)
       QString open, close; QStringList font;
       // A link's own blue underline is implied by <A>.
-      if (!f.isAnchor() && f.foreground().style() != Qt::NoBrush && f.foreground().color() != Qt::black) font << QStringLiteral("COLOR=\"%1\"").arg(f.foreground().color().name());
+      if (!f.isAnchor() && f.foreground().style() != Qt::NoBrush) font << QStringLiteral("COLOR=\"%1\"").arg(f.foreground().color().name());
       if (f.background().style() != Qt::NoBrush) font << QStringLiteral("BACK=\"%1\"").arg(f.background().color().name());
       if (f.hasProperty(QTextFormat::FontFamilies) && !f.fontFamilies().toStringList().isEmpty()) font << QStringLiteral("FACE=\"%1\"").arg(f.fontFamilies().toStringList().first());
       const int size = f.hasProperty(HtmlSizeProperty) ? f.intProperty(HtmlSizeProperty) : 3; if (size != 3) font << QStringLiteral("SIZE=%1").arg(size);
@@ -82,6 +86,34 @@ QString html(const QTextDocument &document, const QColor &background, QList<QByt
     if (inLink) body += QStringLiteral("</A>");
   }
   return QStringLiteral("<HTML><BODY BGCOLOR=\"%1\">%2</BODY></HTML>").arg(background.name(), body);
+}
+
+void insertMessageHtml(QTextCursor &cursor, const QString &html, const QColor &fallbackBackground) {
+  QColor background = fallbackBackground;
+  static const QRegularExpression body(QStringLiteral("<BODY\\b([^>]*)>"), QRegularExpression::CaseInsensitiveOption);
+  static const QRegularExpression bodyContent(QStringLiteral("<BODY\\b[^>]*>([\\s\\S]*?)</BODY>"), QRegularExpression::CaseInsensitiveOption);
+  static const QRegularExpression bgcolor(QStringLiteral("\\bBGCOLOR\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)'|([^\\s>]+))"), QRegularExpression::CaseInsensitiveOption);
+  const QRegularExpressionMatch bodyMatch = body.match(html);
+  if (bodyMatch.hasMatch()) {
+    const QRegularExpressionMatch colorMatch = bgcolor.match(bodyMatch.captured(1));
+    if (colorMatch.hasMatch()) {
+      QString value = colorMatch.captured(1); if (value.isEmpty()) value = colorMatch.captured(2); if (value.isEmpty()) value = colorMatch.captured(3);
+      const QColor parsed(value); if (parsed.isValid()) background = parsed;
+    }
+  }
+  const int start = cursor.position(); QTextBlockFormat block = cursor.blockFormat(); block.clearBackground(); cursor.setBlockFormat(block);
+  QTextCharFormat insertionFormat = cursor.charFormat(); insertionFormat.clearForeground(); insertionFormat.clearBackground(); cursor.setCharFormat(insertionFormat);
+  const QRegularExpressionMatch contentMatch = bodyContent.match(html); const QString content = contentMatch.hasMatch() ? contentMatch.captured(1) : html;
+  cursor.insertHtml(content);
+  const int end = cursor.position(); QTextDocument *document = cursor.document(); struct UnstyledRange { int position; int length; QColor foreground; }; QList<UnstyledRange> unstyled;
+  for (QTextBlock current = document->findBlock(start); current.isValid() && current.position() <= end; current = current.next()) {
+    QTextBlockFormat format = current.blockFormat(); QColor textBackground = background;
+    if (format.hasProperty(QTextFormat::BackgroundBrush)) { const QColor explicitBackground = format.background().color(); if (explicitBackground.isValid()) textBackground = explicitBackground; }
+    else { format.setBackground(background); QTextCursor blockCursor(current); blockCursor.setBlockFormat(format); }
+    const QColor foreground = qGray(textBackground.rgb()) < 128 ? QColor(Qt::white) : QColor(Qt::black);
+    for (auto it = current.begin(); !it.atEnd(); ++it) { const QTextFragment fragment = it.fragment(); if (fragment.isValid() && !fragment.charFormat().hasProperty(QTextFormat::ForegroundBrush) && !fragment.charFormat().isAnchor()) unstyled.append({fragment.position(), fragment.length(), foreground}); }
+  }
+  for (const auto &range : unstyled) { QTextCursor textCursor(document); textCursor.setPosition(range.position); textCursor.setPosition(range.position + range.length, QTextCursor::KeepAnchor); QTextCharFormat format; format.setForeground(range.foreground); textCursor.mergeCharFormat(format); }
 }
 
 void insertSmileys(QTextDocument &document, int from) {

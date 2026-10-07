@@ -90,7 +90,7 @@ public:
     const QRgb colour = own ? 0xFF0000 : colours_.value(normalized(sender), 0x0000FF);
     QTextCursor cursor(&document(History)); cursor.movePosition(QTextCursor::End); if (!first_) cursor.insertBlock(); first_ = false;
     cursor.insertHtml(QStringLiteral("<font color=#%1><b>%2</b>:</font>&nbsp;").arg(colour, 6, 16, QLatin1Char('0')).arg(sender.toHtmlEscaped()));
-    const int start = cursor.position(); cursor.insertHtml(text); ate::insertSmileys(document(History), start); requestUpdate();
+    const int start = cursor.position(); ate::insertMessageHtml(cursor, text, QColor(Qt::white)); ate::insertSmileys(document(History), start); requestUpdate();
     if (!own) playAimSound(AimSound::ChatReceive);
 #ifdef Q_OS_WIN
     if (!own && prefs::chatFlash() && !isActive() && handle()) { FLASHWINFO flash{sizeof(flash), reinterpret_cast<HWND>(winId()), FLASHW_ALL | FLASHW_TIMERNOFG, 0, 0}; FlashWindowEx(&flash); } // "Flash window when messages are received"
@@ -142,7 +142,7 @@ protected:
 private:
   static bool containsName(const QStringList &list, const QString &name) { for (const QString &n : list) if (normalized(n) == normalized(name)) return true; return false; }
   static bool joinNotices() { return prefs::chatAnnouncements(); } // Preferences > IM/Chat "Show announcements..."
-  void notice(const QString &html) { QTextCursor cursor(&document(History)); cursor.movePosition(QTextCursor::End); if (!first_) cursor.insertBlock(); first_ = false; cursor.insertHtml(QStringLiteral("<font color=#000000>%1</font>").arg(html)); requestUpdate(); }
+  void notice(const QString &html) { QTextCursor cursor(&document(History)); cursor.movePosition(QTextCursor::End); if (!first_) cursor.insertBlock(); first_ = false; ate::insertMessageHtml(cursor, QStringLiteral("<font color=#000000>%1</font>").arg(html), QColor(Qt::white)); requestUpdate(); }
   void updateTitle() {
     // STRING 719 "Chat Room: %s" + state suffix 764-772 (none while in the room).
     static const quint32 suffix[] = {764, 765, 766, 767, 768, 769, 0, 771, 772};

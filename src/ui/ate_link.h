@@ -18,6 +18,7 @@ QString html(const QTextDocument &document, const QColor &background = QColor(25
 QByteArray directPayload(const QTextDocument &document, const QColor &background, quint16 *encoding);
 // Decodes a received frame into HTML whose images are resources added to `target`.
 QString directHtml(const QByteArray &payload, quint16 encoding, QTextDocument &target);
+void insertMessageHtml(QTextCursor &cursor, const QString &html, const QColor &fallbackBackground);
 // Insert > Image (0x265): RT_STRING 386 title, 385 filter; inserts the picture at the caret. Returns true if inserted.
 bool insertPicture(QWindow *owner, QTextCursor &cursor);
 bool hasImages(const QTextDocument &document);
